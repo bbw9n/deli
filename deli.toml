@@ -1,0 +1,24 @@
+[[workspaces]]
+name = "local"
+root = "."
+
+[[document_providers]]
+name = "docs"
+[document_providers.command]
+program = "sh"
+args = ["tests/fixtures/docs.sh"]
+
+[[config_providers]]
+name = "config"
+[config_providers.command]
+program = "sh"
+args = ["tests/fixtures/configs.sh"]
+
+[[monitor_providers]]
+name = "monitor"
+[monitor_providers.command]
+program = "sh"
+args = ["tests/fixtures/metrics.sh"]
+
+[ui]
+refresh_seconds = 30

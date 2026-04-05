@@ -1,0 +1,160 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+};
+
+use crate::{
+    app::state::{ActiveView, AppState},
+    runtime::gnuplot::{ChartRenderMode, plan_chart},
+};
+
+pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(10), Constraint::Length(3)])
+        .split(frame.area());
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(24),
+            Constraint::Min(50),
+            Constraint::Length(36),
+        ])
+        .split(chunks[0]);
+
+    render_sidebar(frame, body[0], state);
+    render_main(frame, body[1], state);
+    render_details(frame, body[2], state);
+    render_footer(frame, chunks[1], state);
+
+    if state.command_palette_open {
+        render_palette(frame, centered_rect(frame.area(), 70, 30), state);
+    }
+}
+
+fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let items = ActiveView::all()
+        .iter()
+        .map(|view| {
+            let marker = if *view == state.active_view { ">" } else { " " };
+            ListItem::new(Line::from(format!("{marker} {}", view.label())))
+        })
+        .collect::<Vec<_>>();
+
+    let list = List::new(items).block(Block::default().title("Views").borders(Borders::ALL));
+    frame.render_widget(list, area);
+}
+
+fn render_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = state.active_view.label();
+    let content = match state.active_view {
+        ActiveView::Documents => state.document_lines(),
+        ActiveView::Configs => state.config_lines(),
+        ActiveView::Worktree => state.worktree_lines(),
+        ActiveView::Monitoring => state.monitor_lines(),
+    };
+
+    let paragraph = Paragraph::new(content.join("\n"))
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_details(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let lines = state.detail_lines();
+    let paragraph = Paragraph::new(lines.join("\n"))
+        .block(Block::default().title("Details").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let text = Line::from(vec![
+        Span::styled("1-4", Style::default().fg(Color::Yellow)),
+        Span::raw(" switch view  "),
+        Span::styled("/", Style::default().fg(Color::Yellow)),
+        Span::raw(" command palette  "),
+        Span::styled("r", Style::default().fg(Color::Yellow)),
+        Span::raw(" refresh  "),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(" quit  "),
+        Span::styled(
+            format!("workspace: {}", state.workspace_name),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let paragraph =
+        Paragraph::new(text).block(Block::default().title("Status").borders(Borders::ALL));
+    frame.render_widget(paragraph, area);
+}
+
+fn render_palette(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    frame.render_widget(Clear, area);
+    let actions = [
+        "open document",
+        "refresh providers",
+        "switch workspace",
+        "run worktree command",
+    ];
+    let content = actions.join("\n");
+    let block = Paragraph::new(content).block(
+        Block::default()
+            .title(format!("Command Palette: {}", state.command_query))
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(block, area);
+}
+
+fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+pub fn render_snapshot(state: &AppState, width: u16, height: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+    terminal.draw(|frame| render(frame, state)).expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+
+    let mut lines = Vec::new();
+    for y in 0..height {
+        let mut line = String::new();
+        for x in 0..width {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines.join("\n")
+}
+
+pub fn monitor_detail_hint(state: &AppState) -> String {
+    match &state.monitor_frame {
+        Some(frame) => {
+            let plan = plan_chart(frame);
+            match plan.mode {
+                ChartRenderMode::KittyImage => "Kitty graph renderer ready".into(),
+                ChartRenderMode::TextFallback => "Kitty unavailable, using text fallback".into(),
+            }
+        }
+        None => "No chart loaded".into(),
+    }
+}
