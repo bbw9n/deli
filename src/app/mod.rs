@@ -123,7 +123,15 @@ impl App {
                 self.state.move_selection(1);
                 false
             }
+            KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.move_selection(1);
+                false
+            }
             KeyCode::Up | KeyCode::Char('k') => {
+                self.state.move_selection(-1);
+                false
+            }
+            KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.state.move_selection(-1);
                 false
             }
@@ -131,7 +139,15 @@ impl App {
                 self.state.scroll_current(8);
                 false
             }
+            KeyCode::Char('n') => {
+                self.state.scroll_current(8);
+                false
+            }
             KeyCode::PageUp => {
+                self.state.scroll_current(-8);
+                false
+            }
+            KeyCode::Char('p') => {
                 self.state.scroll_current(-8);
                 false
             }
