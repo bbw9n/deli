@@ -64,27 +64,83 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        if self.state.command_palette_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.state.command_palette_open = false;
+                    false
+                }
+                KeyCode::Backspace => {
+                    self.state.command_query.pop();
+                    false
+                }
+                KeyCode::Char(c) => {
+                    self.state.command_query.push(c);
+                    false
+                }
+                _ => false,
+            };
+        }
+
+        if self.state.config_filter_mode {
+            return match code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.state.clear_filter_mode();
+                    false
+                }
+                KeyCode::Backspace => {
+                    self.state.pop_filter_char();
+                    false
+                }
+                KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.append_filter_char(c);
+                    false
+                }
+                _ => false,
+            };
+        }
+
         match code {
             KeyCode::Char('q') => true,
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => true,
             KeyCode::Char('1') => {
-                self.state.active_view = ActiveView::Documents;
+                self.state.activate_view(ActiveView::Documents);
                 false
             }
             KeyCode::Char('2') => {
-                self.state.active_view = ActiveView::Configs;
+                self.state.activate_view(ActiveView::Configs);
                 false
             }
             KeyCode::Char('3') => {
-                self.state.active_view = ActiveView::Worktree;
+                self.state.activate_view(ActiveView::Worktree);
                 false
             }
             KeyCode::Char('4') => {
-                self.state.active_view = ActiveView::Monitoring;
+                self.state.activate_view(ActiveView::Monitoring);
+                false
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.move_selection(1);
+                false
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.move_selection(-1);
+                false
+            }
+            KeyCode::PageDown => {
+                self.state.scroll_current(8);
+                false
+            }
+            KeyCode::PageUp => {
+                self.state.scroll_current(-8);
                 false
             }
             KeyCode::Char('r') => {
                 self.state.refresh_all();
+                false
+            }
+            KeyCode::Char('f') => {
+                self.state.toggle_config_filter_mode();
                 false
             }
             KeyCode::Char('/') => {
@@ -92,15 +148,8 @@ impl App {
                 false
             }
             KeyCode::Esc => {
+                self.state.clear_filter_mode();
                 self.state.command_palette_open = false;
-                false
-            }
-            KeyCode::Char(c) if self.state.command_palette_open => {
-                self.state.command_query.push(c);
-                false
-            }
-            KeyCode::Backspace if self.state.command_palette_open => {
-                self.state.command_query.pop();
                 false
             }
             _ => false,

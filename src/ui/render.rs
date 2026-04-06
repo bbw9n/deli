@@ -50,18 +50,16 @@ fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let title = state.active_view.label();
-    let content = match state.active_view {
-        ActiveView::Documents => state.document_lines(),
-        ActiveView::Configs => state.config_lines(),
-        ActiveView::Worktree => state.worktree_lines(),
-        ActiveView::Monitoring => state.monitor_lines(),
-    };
-
-    let paragraph = Paragraph::new(content.join("\n"))
-        .block(Block::default().title(title).borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    match state.active_view {
+        ActiveView::Documents => render_documents(frame, area, state),
+        ActiveView::Configs => render_configs(frame, area, state),
+        ActiveView::Worktree => {
+            render_text_panel(frame, area, "Worktree", &state.worktree_lines().join("\n"))
+        }
+        ActiveView::Monitoring => {
+            render_text_panel(frame, area, "Monitoring", &state.monitor_lines().join("\n"))
+        }
+    }
 }
 
 fn render_details(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -76,6 +74,12 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let text = Line::from(vec![
         Span::styled("1-4", Style::default().fg(Color::Yellow)),
         Span::raw(" switch view  "),
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(" move  "),
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+        Span::raw(" scroll doc  "),
+        Span::styled("f", Style::default().fg(Color::Yellow)),
+        Span::raw(" filter configs  "),
         Span::styled("/", Style::default().fg(Color::Yellow)),
         Span::raw(" command palette  "),
         Span::styled("r", Style::default().fg(Color::Yellow)),
@@ -89,6 +93,34 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ]);
     let paragraph =
         Paragraph::new(text).block(Block::default().title("Status").borders(Borders::ALL));
+    frame.render_widget(paragraph, area);
+}
+
+fn render_documents(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(30), Constraint::Min(20)])
+        .split(area);
+
+    let list = Paragraph::new(state.document_list_lines().join("\n"))
+        .block(Block::default().title("Documents").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(list, chunks[0]);
+
+    let reader = Paragraph::new(state.document_reader_lines().join("\n"))
+        .block(Block::default().title("Reader").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(reader, chunks[1]);
+}
+
+fn render_configs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    render_text_panel(frame, area, "Configs", &state.config_lines().join("\n"));
+}
+
+fn render_text_panel(frame: &mut Frame<'_>, area: Rect, title: &str, content: &str) {
+    let paragraph = Paragraph::new(content.to_string())
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
