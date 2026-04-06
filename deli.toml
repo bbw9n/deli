@@ -18,6 +18,11 @@ args = ["preview/providers/configs.sh"]
 name = "monitor"
 kind = "command"
 query = "avg(rate(container_cpu_usage_seconds_total[5m]))"
+query_presets = [
+  "avg(rate(container_cpu_usage_seconds_total[5m]))",
+  "sum(rate(http_requests_total[5m]))",
+  "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+]
 [monitor_providers.command]
 program = "sh"
 args = ["preview/providers/metrics.sh", "{{query}}"]

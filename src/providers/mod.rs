@@ -1,4 +1,5 @@
 pub mod command;
+pub mod metrics_http;
 pub mod registry;
 
 use std::path::PathBuf;

@@ -243,6 +243,38 @@ fn opentsdb_http_provider_posts_query_payload() {
     );
 }
 
+#[test]
+fn multiple_monitor_providers_can_be_switched_in_app_state() {
+    let config = AppConfig::from_toml(
+        r#"
+        [[monitor_providers]]
+        name = "prom-a"
+        kind = "command"
+        query = "up"
+        query_presets = ["up", "up{job=\"api\"}"]
+        [monitor_providers.command]
+        program = "echo"
+        args = ["{\"title\":\"A\",\"series\":[]}"]
+
+        [[monitor_providers]]
+        name = "prom-b"
+        kind = "command"
+        query = "rate(http_requests_total[5m])"
+        [monitor_providers.command]
+        program = "echo"
+        args = ["{\"title\":\"B\",\"series\":[]}"]
+        "#,
+    )
+    .unwrap();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+    state.refresh_all();
+
+    state.cycle_monitor_provider(1);
+
+    assert_eq!(state.monitor_query, "rate(http_requests_total[5m])");
+}
+
 fn write_fixture(path: impl AsRef<Path>, body: &str) {
     fs::write(&path, body).unwrap();
 }

@@ -6,9 +6,9 @@ use crate::{
         ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
         command::{
             CommandActionProvider, CommandConfigProvider, CommandDocumentProvider,
-            CommandMonitorProvider, OpenTsdbMonitorProvider, PrometheusMonitorProvider,
-            monitor_kind,
+            CommandMonitorProvider, monitor_kind,
         },
+        metrics_http::{OpenTsdbMonitorProvider, PrometheusMonitorProvider},
     },
 };
 

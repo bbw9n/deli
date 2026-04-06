@@ -24,6 +24,8 @@ pub struct ChartPlan {
     pub mode: ChartRenderMode,
     pub script: String,
     pub output_path: PathBuf,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,14 @@ pub enum ChartRenderStatus {
 }
 
 pub fn plan_chart(frame: &TimeSeriesFrame) -> ChartPlan {
+    plan_chart_with_size(frame, 1200, 400)
+}
+
+pub fn plan_chart_with_size(
+    frame: &TimeSeriesFrame,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> ChartPlan {
     let supports_kitty = env::var("KITTY_WINDOW_ID").is_ok();
     let output_path = env::temp_dir().join("deli-monitor.png");
     let mode = if supports_kitty {
@@ -44,13 +54,23 @@ pub fn plan_chart(frame: &TimeSeriesFrame) -> ChartPlan {
 
     ChartPlan {
         mode,
-        script: build_gnuplot_script(frame, &output_path),
+        script: build_gnuplot_script(frame, &output_path, pixel_width, pixel_height),
         output_path,
+        pixel_width,
+        pixel_height,
     }
 }
 
 pub fn render_chart(frame: &TimeSeriesFrame) -> (ChartPlan, ChartRenderStatus) {
-    let plan = plan_chart(frame);
+    render_chart_with_size(frame, 1200, 400)
+}
+
+pub fn render_chart_with_size(
+    frame: &TimeSeriesFrame,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> (ChartPlan, ChartRenderStatus) {
+    let plan = plan_chart_with_size(frame, pixel_width, pixel_height);
     let mut process = match Command::new("gnuplot")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -121,9 +141,18 @@ pub fn render_ascii_chart(
     )
 }
 
-pub fn build_gnuplot_script(frame: &TimeSeriesFrame, output_path: &PathBuf) -> String {
+pub fn build_gnuplot_script(
+    frame: &TimeSeriesFrame,
+    output_path: &PathBuf,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> String {
     let mut script = vec![
-        "set terminal pngcairo transparent noenhanced size 1200,400".to_string(),
+        format!(
+            "set terminal pngcairo transparent noenhanced size {},{}",
+            pixel_width.max(320),
+            pixel_height.max(160)
+        ),
         format!("set output '{}'", output_path.display()),
         format!(
             "set title '{}' textcolor rgb '{}'",
@@ -253,9 +282,10 @@ mod tests {
         };
 
         let output = PathBuf::from("/tmp/chart.png");
-        let script = build_gnuplot_script(&frame, &output);
+        let script = build_gnuplot_script(&frame, &output, 1200, 400);
 
         assert!(script.contains("transparent noenhanced"));
+        assert!(script.contains("size 1200,400"));
         assert!(script.contains("set title 'CPU' textcolor rgb '#d9d9d9'"));
         assert!(script.contains("set key outside textcolor rgb '#d9d9d9'"));
         assert!(script.contains("plot '-' using 1:2 with lines lw 2 lc rgb '#ffd166' title 'api'"));
@@ -286,5 +316,18 @@ mod tests {
     fn strips_ansi_sequences_from_ascii_output() {
         let value = "\u{1b}[22;39mhello\u{1b}[0m";
         assert_eq!(strip_ansi_sequences(value), "hello");
+    }
+
+    #[test]
+    fn plans_size_aware_png_chart() {
+        let frame = TimeSeriesFrame {
+            title: "CPU".into(),
+            series: vec![],
+        };
+
+        let plan = plan_chart_with_size(&frame, 640, 240);
+        assert_eq!(plan.pixel_width, 640);
+        assert_eq!(plan.pixel_height, 240);
+        assert!(plan.script.contains("size 640,240"));
     }
 }

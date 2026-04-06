@@ -54,8 +54,13 @@ impl App {
         picker: &Picker,
     ) -> Result<()> {
         self.state.refresh_all();
+        let graph_area = render::monitoring_graph_inner_area(terminal.size()?.into(), &self.state);
+        self.state.sync_monitor_graph_area(graph_area, picker);
         self.state.sync_monitor_image(picker);
         loop {
+            let graph_area =
+                render::monitoring_graph_inner_area(terminal.size()?.into(), &self.state);
+            self.state.sync_monitor_graph_area(graph_area, picker);
             terminal.draw(|frame| render::render(frame, &mut self.state))?;
 
             match self.event_loop.next()? {
@@ -224,6 +229,26 @@ impl App {
             }
             KeyCode::Char('m') => {
                 self.state.toggle_monitor_query_mode();
+                false
+            }
+            KeyCode::Char(']') => {
+                self.state.cycle_monitor_provider(1);
+                false
+            }
+            KeyCode::Char('[') => {
+                self.state.cycle_monitor_provider(-1);
+                false
+            }
+            KeyCode::Char('}') => {
+                self.state.cycle_monitor_preset(1);
+                false
+            }
+            KeyCode::Char('{') => {
+                self.state.cycle_monitor_preset(-1);
+                false
+            }
+            KeyCode::Char('l') => {
+                self.state.toggle_monitor_live_poll();
                 false
             }
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {

@@ -51,6 +51,8 @@ pub struct MonitorProviderConfig {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub query: Option<String>,
+    #[serde(default)]
+    pub query_presets: Vec<String>,
     #[serde(default = "default_step_seconds")]
     pub step_seconds: u64,
     #[serde(default = "default_lookback_minutes")]
@@ -180,6 +182,7 @@ mod tests {
             kind = "prometheus"
             endpoint = "http://localhost:9090"
             query = "up"
+            query_presets = ["up", "rate(http_requests_total[5m])"]
             "#,
         )
         .unwrap();
@@ -190,6 +193,10 @@ mod tests {
         assert_eq!(
             config.monitor_providers[0].kind,
             Some(MonitorProviderKind::Prometheus)
+        );
+        assert_eq!(
+            config.monitor_providers[0].query_presets,
+            vec!["up", "rate(http_requests_total[5m])"]
         );
     }
 }

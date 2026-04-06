@@ -52,6 +52,18 @@ pub fn monitoring_query_inner_area(area: Rect, state: &AppState) -> Rect {
         .inner(chunks[1])
 }
 
+pub fn monitoring_graph_inner_area(area: Rect, state: &AppState) -> Rect {
+    let body = body_layout(area, state);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(body[1]);
+    Block::default()
+        .title("Metric Graph")
+        .borders(Borders::ALL)
+        .inner(chunks[0])
+}
+
 fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let items = ActiveView::all()
         .iter()
@@ -109,6 +121,12 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw(" export json  "),
         Span::styled("m", Style::default().fg(Color::Yellow)),
         Span::raw(" metric query  "),
+        Span::styled("[ ]", Style::default().fg(Color::Yellow)),
+        Span::raw(" provider  "),
+        Span::styled("{ }", Style::default().fg(Color::Yellow)),
+        Span::raw(" preset  "),
+        Span::styled("l", Style::default().fg(Color::Yellow)),
+        Span::raw(" live poll  "),
         Span::styled("/", Style::default().fg(Color::Yellow)),
         Span::raw(" command palette  "),
         Span::styled("r", Style::default().fg(Color::Yellow)),

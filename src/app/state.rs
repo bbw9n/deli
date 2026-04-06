@@ -14,9 +14,17 @@ use crate::{
         timeseries::TimeSeriesFrame,
     },
     providers::registry::ProviderRegistry,
-    runtime::gnuplot::{ChartPlan, ChartRenderStatus, render_ascii_chart, render_chart},
+    runtime::gnuplot::{ChartPlan, ChartRenderStatus, render_ascii_chart, render_chart_with_size},
     ui::render::monitor_detail_hint,
 };
+
+#[derive(Debug, Clone)]
+struct MonitorSourceState {
+    name: String,
+    query: String,
+    query_presets: Vec<String>,
+    preset_index: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -74,6 +82,12 @@ pub struct AppState {
     pub monitor_chart_status: Option<ChartRenderStatus>,
     pub monitor_chart_ascii: Option<String>,
     pub monitor_image: Option<StatefulProtocol>,
+    monitor_sources: Vec<MonitorSourceState>,
+    monitor_provider_index: usize,
+    monitor_live_poll: bool,
+    monitor_refresh_seconds: u64,
+    tick_count: u64,
+    monitor_graph_area: Rect,
     refresh_count: usize,
 }
 
@@ -85,6 +99,29 @@ impl AppState {
     ) -> Result<Self> {
         let workspace = select_workspace(&config, workspace_override)?;
         Ok(Self {
+            monitor_sources: config
+                .monitor_providers
+                .iter()
+                .map(|provider| {
+                    let query = provider.query.clone().unwrap_or_default();
+                    let preset_index = provider
+                        .query_presets
+                        .iter()
+                        .position(|preset| preset == &query)
+                        .unwrap_or(0);
+                    MonitorSourceState {
+                        name: provider.name.clone(),
+                        query,
+                        query_presets: provider.query_presets.clone(),
+                        preset_index,
+                    }
+                })
+                .collect(),
+            monitor_provider_index: 0,
+            monitor_live_poll: false,
+            monitor_refresh_seconds: config.ui.refresh_seconds.max(1),
+            tick_count: 0,
+            monitor_graph_area: Rect::new(0, 0, 96, 18),
             workspace_name: workspace.name.clone(),
             workspace_root: PathBuf::from(&workspace.root),
             active_view: ActiveView::Documents,
@@ -121,8 +158,12 @@ impl AppState {
     }
 
     pub fn on_tick(&mut self) {
+        self.tick_count = self.tick_count.saturating_add(1);
         if self.notifications.len() > 4 {
             self.notifications.truncate(4);
+        }
+        if self.monitor_live_poll && self.tick_count % self.monitor_refresh_seconds == 0 {
+            self.refresh_monitor_only();
         }
     }
 
@@ -165,16 +206,7 @@ impl AppState {
         self.config_index = clamp_index(self.config_index, self.filtered_config_frame().rows.len());
         self.sync_config_editor(true);
 
-        self.monitor_frame = self.registry.monitors.values().next().and_then(|provider| {
-            match provider.fetch(&context, &self.monitor_query) {
-                Ok(frame) => Some(frame),
-                Err(error) => {
-                    self.notifications
-                        .insert(0, format!("{} provider error: {}", provider.name(), error));
-                    None
-                }
-            }
-        });
+        self.refresh_monitor_source(&context);
         self.sync_monitor_query_editor();
         self.refresh_monitor_chart();
 
@@ -445,6 +477,10 @@ impl AppState {
                     .collect::<Vec<_>>();
                 lines.push(String::new());
                 lines.push(frame.title.clone());
+                lines.push(format!(
+                    "Provider: {}",
+                    self.current_monitor_provider_name().unwrap_or("none")
+                ));
                 lines.push(format!("Query: {}", self.monitor_query));
                 lines.extend(frame.summary_lines());
                 if let Some(status) = &self.monitor_chart_status {
@@ -512,6 +548,15 @@ impl AppState {
             ActiveView::Worktree => {}
             ActiveView::Monitoring => {
                 lines.push(format!("Metric query: {}", self.monitor_query));
+                lines.push(format!(
+                    "Metric provider: {}",
+                    self.current_monitor_provider_name().unwrap_or("none")
+                ));
+                lines.push(format!(
+                    "Live polling: {} ({}s)",
+                    if self.monitor_live_poll { "on" } else { "off" },
+                    self.monitor_refresh_seconds
+                ));
                 lines.push(format!(
                     "Query panel: {}",
                     if self.monitor_query_mode {
@@ -605,10 +650,91 @@ impl AppState {
         if let Some(editor) = &self.monitor_query_editor {
             self.monitor_query = editor.get_content().trim().to_string();
         }
+        let current_query = self.monitor_query.clone();
+        if let Some(source) = self.current_monitor_source_mut() {
+            source.query = current_query.clone();
+            if let Some(index) = source
+                .query_presets
+                .iter()
+                .position(|preset| preset == &current_query)
+            {
+                source.preset_index = index;
+            }
+        }
         self.monitor_query_mode = false;
         self.notifications
             .insert(0, format!("Applied metric query: {}", self.monitor_query));
         self.refresh_monitor_only();
+    }
+
+    pub fn cycle_monitor_provider(&mut self, delta: isize) {
+        let len = self.monitor_sources.len();
+        if len == 0 {
+            self.notifications
+                .insert(0, "No monitoring providers configured".into());
+            return;
+        }
+        self.monitor_provider_index = wrap_index(self.monitor_provider_index, len, delta);
+        if let Some(source) = self.current_monitor_source() {
+            self.monitor_query = source.query.clone();
+        }
+        self.sync_monitor_query_editor();
+        self.notifications.insert(
+            0,
+            format!(
+                "Switched monitor provider to {}",
+                self.current_monitor_provider_name().unwrap_or("unknown")
+            ),
+        );
+        self.refresh_monitor_only();
+    }
+
+    pub fn cycle_monitor_preset(&mut self, delta: isize) {
+        let Some(source) = self.current_monitor_source_mut() else {
+            self.notifications
+                .insert(0, "No monitoring providers configured".into());
+            return;
+        };
+        if source.query_presets.is_empty() {
+            self.notifications
+                .insert(0, "Current provider has no query presets".into());
+            return;
+        }
+
+        source.preset_index = wrap_index(source.preset_index, source.query_presets.len(), delta);
+        let next_query = source.query_presets[source.preset_index].clone();
+        source.query = next_query.clone();
+        self.monitor_query = next_query;
+        self.sync_monitor_query_editor();
+        self.notifications
+            .insert(0, format!("Applied query preset: {}", self.monitor_query));
+        self.refresh_monitor_only();
+    }
+
+    pub fn toggle_monitor_live_poll(&mut self) {
+        self.monitor_live_poll = !self.monitor_live_poll;
+        self.notifications.insert(
+            0,
+            if self.monitor_live_poll {
+                format!("Live polling enabled ({}s)", self.monitor_refresh_seconds)
+            } else {
+                "Live polling disabled".into()
+            },
+        );
+    }
+
+    pub fn monitor_live_poll(&self) -> bool {
+        self.monitor_live_poll
+    }
+
+    pub fn sync_monitor_graph_area(&mut self, area: Rect, picker: &Picker) {
+        let normalized = Rect::new(area.x, area.y, area.width.max(20), area.height.max(8));
+        if normalized == self.monitor_graph_area {
+            return;
+        }
+        self.monitor_graph_area = normalized;
+        self.refresh_monitor_chart();
+        self.sync_monitor_image(picker);
     }
 
     pub fn monitor_query_cursor(&self, area: Rect) -> Option<(u16, u16)> {
@@ -663,23 +789,17 @@ impl AppState {
 
     fn refresh_monitor_only(&mut self) {
         let context = self.registry.context_for(self.workspace_root.clone());
-        self.monitor_frame = self.registry.monitors.values().next().and_then(|provider| {
-            match provider.fetch(&context, &self.monitor_query) {
-                Ok(frame) => Some(frame),
-                Err(error) => {
-                    self.notifications
-                        .insert(0, format!("{} provider error: {}", provider.name(), error));
-                    None
-                }
-            }
-        });
+        self.refresh_monitor_source(&context);
         self.refresh_monitor_chart();
     }
 
     fn refresh_monitor_chart(&mut self) {
         if let Some(frame) = &self.monitor_frame {
-            self.monitor_chart_ascii = render_ascii_chart(frame, 96, 18).ok();
-            let (plan, status) = render_chart(frame);
+            let ascii_width = self.monitor_graph_area.width.saturating_sub(2).max(20);
+            let ascii_height = self.monitor_graph_area.height.saturating_sub(2).max(8);
+            self.monitor_chart_ascii = render_ascii_chart(frame, ascii_width, ascii_height).ok();
+            let (pixel_width, pixel_height) = self.monitor_pixel_size();
+            let (plan, status) = render_chart_with_size(frame, pixel_width, pixel_height);
             self.monitor_chart_plan = Some(plan);
             self.monitor_chart_status = Some(status);
             self.monitor_image = None;
@@ -689,6 +809,50 @@ impl AppState {
             self.monitor_chart_status = None;
             self.monitor_image = None;
         }
+    }
+
+    fn refresh_monitor_source(&mut self, context: &crate::providers::ProviderContext) {
+        let Some(provider_name) = self.current_monitor_provider_name().map(str::to_string) else {
+            self.monitor_frame = None;
+            return;
+        };
+        let Some(provider) = self.registry.monitors.get(&provider_name) else {
+            self.monitor_frame = None;
+            self.notifications.insert(
+                0,
+                format!("Monitor provider '{provider_name}' is not registered"),
+            );
+            return;
+        };
+
+        self.monitor_frame = match provider.fetch(context, &self.monitor_query) {
+            Ok(frame) => Some(frame),
+            Err(error) => {
+                self.notifications
+                    .insert(0, format!("{} provider error: {}", provider.name(), error));
+                None
+            }
+        };
+    }
+
+    fn current_monitor_provider_name(&self) -> Option<&str> {
+        self.monitor_sources
+            .get(self.monitor_provider_index)
+            .map(|source| source.name.as_str())
+    }
+
+    fn current_monitor_source(&self) -> Option<&MonitorSourceState> {
+        self.monitor_sources.get(self.monitor_provider_index)
+    }
+
+    fn current_monitor_source_mut(&mut self) -> Option<&mut MonitorSourceState> {
+        self.monitor_sources.get_mut(self.monitor_provider_index)
+    }
+
+    fn monitor_pixel_size(&self) -> (u32, u32) {
+        let width = u32::from(self.monitor_graph_area.width.max(20)) * 10;
+        let height = u32::from(self.monitor_graph_area.height.max(8)) * 20;
+        (width, height)
     }
 }
 
@@ -737,6 +901,15 @@ fn step_index(index: usize, len: usize, delta: isize) -> usize {
     } else {
         clamp_index(index.saturating_add(delta as usize), len)
     }
+}
+
+fn wrap_index(index: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let len = len as isize;
+    let next = (index as isize + delta).rem_euclid(len);
+    next as usize
 }
 
 fn render_document(document: &DocumentResource) -> Vec<String> {
@@ -875,5 +1048,87 @@ mod tests {
 
         let exported = temp.path().join("exports").join("config-row-1.json");
         assert!(exported.exists());
+    }
+
+    #[test]
+    fn monitor_provider_switch_updates_active_query() {
+        let config = AppConfig::from_toml(
+            r#"
+            [[monitor_providers]]
+            name = "alpha"
+            kind = "command"
+            query = "up"
+            query_presets = ["up", "up{job=\"api\"}"]
+            [monitor_providers.command]
+            program = "echo"
+            args = ["{\"title\":\"CPU\",\"series\":[]}"]
+
+            [[monitor_providers]]
+            name = "beta"
+            kind = "command"
+            query = "rate(http_requests_total[5m])"
+            query_presets = ["rate(http_requests_total[5m])"]
+            [monitor_providers.command]
+            program = "echo"
+            args = ["{\"title\":\"RPS\",\"series\":[]}"]
+            "#,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+
+        state.cycle_monitor_provider(1);
+
+        assert_eq!(state.monitor_query, "rate(http_requests_total[5m])");
+    }
+
+    #[test]
+    fn monitor_preset_switch_updates_query() {
+        let config = AppConfig::from_toml(
+            r#"
+            [[monitor_providers]]
+            name = "alpha"
+            kind = "command"
+            query = "up"
+            query_presets = ["up", "up{job=\"api\"}"]
+            [monitor_providers.command]
+            program = "echo"
+            args = ["{\"title\":\"CPU\",\"series\":[]}"]
+            "#,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+
+        state.cycle_monitor_preset(1);
+
+        assert_eq!(state.monitor_query, "up{job=\"api\"}");
+    }
+
+    #[test]
+    fn live_poll_triggers_refresh_on_tick_boundary() {
+        let config = AppConfig::from_toml(
+            r#"
+            [[monitor_providers]]
+            name = "alpha"
+            kind = "command"
+            query = "up"
+            [monitor_providers.command]
+            program = "echo"
+            args = ["{\"title\":\"CPU\",\"series\":[]}"]
+
+            [ui]
+            refresh_seconds = 2
+            "#,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+        state.toggle_monitor_live_poll();
+
+        state.on_tick();
+        assert!(state.monitor_frame.is_none());
+        state.on_tick();
+        assert!(state.monitor_frame.is_some());
     }
 }
