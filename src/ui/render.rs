@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use ratatui_image::StatefulImage;
 use tui_markdown::from_str as markdown_to_text;
 
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
     runtime::gnuplot::{ChartRenderMode, plan_chart},
 };
 
-pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+pub fn render(frame: &mut Frame<'_>, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(10), Constraint::Length(3)])
@@ -39,6 +40,18 @@ pub fn config_inspector_inner_area(area: Rect, state: &AppState) -> Rect {
         .inner(body[2])
 }
 
+pub fn monitoring_query_inner_area(area: Rect, state: &AppState) -> Rect {
+    let body = body_layout(area, state);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(body[1]);
+    Block::default()
+        .title("Metric Query")
+        .borders(Borders::ALL)
+        .inner(chunks[1])
+}
+
 fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let items = ActiveView::all()
         .iter()
@@ -52,16 +65,14 @@ fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(list, area);
 }
 
-fn render_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+fn render_main(frame: &mut Frame<'_>, area: Rect, state: &mut AppState) {
     match state.active_view {
         ActiveView::Documents => render_documents(frame, area, state),
         ActiveView::Configs => render_configs(frame, area, state),
         ActiveView::Worktree => {
             render_text_panel(frame, area, "Worktree", &state.worktree_lines().join("\n"))
         }
-        ActiveView::Monitoring => {
-            render_text_panel(frame, area, "Monitoring", &state.monitor_lines().join("\n"))
-        }
+        ActiveView::Monitoring => render_monitoring(frame, area, state),
     }
 }
 
@@ -96,6 +107,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw(" save row  "),
         Span::styled("^e", Style::default().fg(Color::Yellow)),
         Span::raw(" export json  "),
+        Span::styled("m", Style::default().fg(Color::Yellow)),
+        Span::raw(" metric query  "),
         Span::styled("/", Style::default().fg(Color::Yellow)),
         Span::raw(" command palette  "),
         Span::styled("r", Style::default().fg(Color::Yellow)),
@@ -141,6 +154,43 @@ fn render_documents(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn render_configs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     render_text_panel(frame, area, "Configs", &state.config_lines().join("\n"));
+}
+
+fn render_monitoring(frame: &mut Frame<'_>, area: Rect, state: &mut AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    let graph_block = Block::default().title("Metric Graph").borders(Borders::ALL);
+    let graph_inner = graph_block.inner(chunks[0]);
+    frame.render_widget(graph_block, chunks[0]);
+    if let Some(image) = state.monitor_image.as_mut() {
+        frame.render_stateful_widget(StatefulImage::default(), graph_inner, image);
+    } else {
+        let graph = Paragraph::new(state.monitor_lines().join("\n")).wrap(Wrap { trim: false });
+        frame.render_widget(graph, graph_inner);
+    }
+
+    let title = if state.monitor_query_mode {
+        "Metric Query [editing]"
+    } else {
+        "Metric Query [read-only]"
+    };
+    let block = Block::default().title(title).borders(Borders::ALL);
+    let inner = block.inner(chunks[1]);
+    frame.render_widget(block, chunks[1]);
+
+    if let Some(editor) = state.monitor_query_editor() {
+        frame.render_widget(editor, inner);
+        if state.monitor_query_mode
+            && let Some((x, y)) = state.monitor_query_cursor(inner)
+        {
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    } else {
+        let fallback = Paragraph::new(state.monitor_query.clone()).wrap(Wrap { trim: false });
+        frame.render_widget(fallback, inner);
+    }
 }
 
 fn render_text_panel(frame: &mut Frame<'_>, area: Rect, title: &str, content: &str) {
@@ -231,7 +281,7 @@ fn body_layout(area: Rect, state: &AppState) -> Vec<Rect> {
         .to_vec()
 }
 
-pub fn render_snapshot(state: &AppState, width: u16, height: u16) -> String {
+pub fn render_snapshot(state: &mut AppState, width: u16, height: u16) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
     terminal.draw(|frame| render(frame, state)).expect("draw");

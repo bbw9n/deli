@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui_image::picker::Picker;
 
 use crate::{
     app::state::{ActiveView, AppState},
@@ -39,17 +40,23 @@ impl App {
         execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
-        let result = self.run_loop(&mut terminal);
+        let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+        let result = self.run_loop(&mut terminal, &picker);
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
         result
     }
 
-    fn run_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    fn run_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        picker: &Picker,
+    ) -> Result<()> {
         self.state.refresh_all();
+        self.state.sync_monitor_image(picker);
         loop {
-            terminal.draw(|frame| render::render(frame, &self.state))?;
+            terminal.draw(|frame| render::render(frame, &mut self.state))?;
 
             match self.event_loop.next()? {
                 AppEvent::Tick => self.state.on_tick(),
@@ -58,6 +65,9 @@ impl App {
                         break;
                     }
                 }
+            }
+            if self.state.monitor_image.is_none() {
+                self.state.sync_monitor_image(picker);
             }
         }
         Ok(())
@@ -128,6 +138,31 @@ impl App {
             };
         }
 
+        if self.state.monitor_query_mode {
+            return match code {
+                KeyCode::Esc => {
+                    self.state.toggle_monitor_query_mode();
+                    false
+                }
+                KeyCode::Enter => {
+                    self.state.apply_monitor_query();
+                    false
+                }
+                KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.apply_monitor_query();
+                    false
+                }
+                _ => {
+                    let area = render::monitoring_query_inner_area(
+                        ratatui::layout::Rect::new(0, 0, 120, 40),
+                        &self.state,
+                    );
+                    self.state.handle_monitor_query_input(key, area);
+                    false
+                }
+            };
+        }
+
         match code {
             KeyCode::Char('q') => true,
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => true,
@@ -185,6 +220,10 @@ impl App {
             }
             KeyCode::Char('f') => {
                 self.state.toggle_config_filter_mode();
+                false
+            }
+            KeyCode::Char('m') => {
+                self.state.toggle_monitor_query_mode();
                 false
             }
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {

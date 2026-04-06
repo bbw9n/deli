@@ -1,12 +1,13 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
-    models::config::AppConfig,
+    models::config::{AppConfig, MonitorProviderConfig, MonitorProviderKind},
     providers::{
         ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
         command::{
             CommandActionProvider, CommandConfigProvider, CommandDocumentProvider,
-            CommandMonitorProvider,
+            CommandMonitorProvider, OpenTsdbMonitorProvider, PrometheusMonitorProvider,
+            monitor_kind,
         },
     },
 };
@@ -43,12 +44,7 @@ impl ProviderRegistry {
         let monitors = config
             .monitor_providers
             .iter()
-            .map(|provider| {
-                (
-                    provider.name.clone(),
-                    Arc::new(CommandMonitorProvider::new(provider)) as Arc<dyn MonitorProvider>,
-                )
-            })
+            .filter_map(build_monitor_provider)
             .collect();
         let actions = config
             .action_providers
@@ -74,6 +70,29 @@ impl ProviderRegistry {
     }
 }
 
+fn build_monitor_provider(
+    provider: &MonitorProviderConfig,
+) -> Option<(String, Arc<dyn MonitorProvider>)> {
+    let built: Result<Arc<dyn MonitorProvider>, _> = match monitor_kind(provider) {
+        MonitorProviderKind::Command => CommandMonitorProvider::new(provider)
+            .map(|provider| Arc::new(provider) as Arc<dyn MonitorProvider>),
+        MonitorProviderKind::Prometheus | MonitorProviderKind::VictoriaMetrics => {
+            let product_name = match monitor_kind(provider) {
+                MonitorProviderKind::VictoriaMetrics => "VictoriaMetrics",
+                _ => "Prometheus",
+            };
+            PrometheusMonitorProvider::new(provider, product_name)
+                .map(|provider| Arc::new(provider) as Arc<dyn MonitorProvider>)
+        }
+        MonitorProviderKind::OpenTsdb => OpenTsdbMonitorProvider::new(provider)
+            .map(|provider| Arc::new(provider) as Arc<dyn MonitorProvider>),
+    };
+
+    built
+        .ok()
+        .map(|provider_impl| (provider.name.clone(), provider_impl))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::models::config::AppConfig;
@@ -95,6 +114,12 @@ mod tests {
             [config_providers.command]
             program = "echo"
             args = ["{\"columns\":[],\"rows\":[]}"]
+
+            [[monitor_providers]]
+            name = "prom"
+            kind = "prometheus"
+            endpoint = "http://localhost:9090"
+            query = "up"
             "#,
         )
         .unwrap();
@@ -102,5 +127,6 @@ mod tests {
         let registry = ProviderRegistry::from_config(&config);
         assert_eq!(registry.documents.len(), 1);
         assert_eq!(registry.configs.len(), 1);
+        assert_eq!(registry.monitors.len(), 1);
     }
 }

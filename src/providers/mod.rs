@@ -26,7 +26,7 @@ pub trait ConfigProvider: Send + Sync {
 
 pub trait MonitorProvider: Send + Sync {
     fn name(&self) -> &str;
-    fn fetch(&self, context: &ProviderContext) -> Result<TimeSeriesFrame, DeliError>;
+    fn fetch(&self, context: &ProviderContext, query: &str) -> Result<TimeSeriesFrame, DeliError>;
 }
 
 pub trait ActionProvider: Send + Sync {

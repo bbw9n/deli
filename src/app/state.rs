@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui_code_editor::{editor::Editor, theme};
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
 use crate::{
     models::{
@@ -13,6 +14,7 @@ use crate::{
         timeseries::TimeSeriesFrame,
     },
     providers::registry::ProviderRegistry,
+    runtime::gnuplot::{ChartPlan, ChartRenderStatus, render_ascii_chart, render_chart},
     ui::render::monitor_detail_hint,
 };
 
@@ -65,6 +67,13 @@ pub struct AppState {
     pub config_editor_row: Option<usize>,
     pub config_editor_dirty: bool,
     pub config_editor_mode: bool,
+    pub monitor_query: String,
+    pub monitor_query_editor: Option<Editor>,
+    pub monitor_query_mode: bool,
+    pub monitor_chart_plan: Option<ChartPlan>,
+    pub monitor_chart_status: Option<ChartRenderStatus>,
+    pub monitor_chart_ascii: Option<String>,
+    pub monitor_image: Option<StatefulProtocol>,
     refresh_count: usize,
 }
 
@@ -96,6 +105,17 @@ impl AppState {
             config_editor_row: None,
             config_editor_dirty: false,
             config_editor_mode: false,
+            monitor_query: config
+                .monitor_providers
+                .first()
+                .and_then(|provider| provider.query.clone())
+                .unwrap_or_default(),
+            monitor_query_editor: None,
+            monitor_query_mode: false,
+            monitor_chart_plan: None,
+            monitor_chart_status: None,
+            monitor_chart_ascii: None,
+            monitor_image: None,
             refresh_count: 0,
         })
     }
@@ -146,7 +166,7 @@ impl AppState {
         self.sync_config_editor(true);
 
         self.monitor_frame = self.registry.monitors.values().next().and_then(|provider| {
-            match provider.fetch(&context) {
+            match provider.fetch(&context, &self.monitor_query) {
                 Ok(frame) => Some(frame),
                 Err(error) => {
                     self.notifications
@@ -155,6 +175,8 @@ impl AppState {
                 }
             }
         });
+        self.sync_monitor_query_editor();
+        self.refresh_monitor_chart();
 
         self.action_commands = self
             .registry
@@ -175,6 +197,9 @@ impl AppState {
         if view != ActiveView::Configs {
             self.config_filter_mode = false;
             self.config_editor_mode = false;
+        }
+        if view != ActiveView::Monitoring {
+            self.monitor_query_mode = false;
         }
     }
 
@@ -411,8 +436,27 @@ impl AppState {
     pub fn monitor_lines(&self) -> Vec<String> {
         match &self.monitor_frame {
             Some(frame) => {
-                let mut lines = vec![frame.title.clone()];
+                let mut lines = self
+                    .monitor_chart_ascii
+                    .clone()
+                    .unwrap_or_else(|| "No chart rendered yet".into())
+                    .lines()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                lines.push(String::new());
+                lines.push(frame.title.clone());
+                lines.push(format!("Query: {}", self.monitor_query));
                 lines.extend(frame.summary_lines());
+                if let Some(status) = &self.monitor_chart_status {
+                    lines.push(String::new());
+                    lines.push(match status {
+                        ChartRenderStatus::Rendered(path) => {
+                            format!("gnuplot: rendered {}", path.display())
+                        }
+                        ChartRenderStatus::Skipped(reason) => format!("gnuplot: {reason}"),
+                        ChartRenderStatus::Failed(reason) => format!("gnuplot failed: {reason}"),
+                    });
+                }
                 lines
             }
             None => vec!["No monitoring series loaded".into()],
@@ -465,7 +509,21 @@ impl AppState {
                     );
                 }
             }
-            ActiveView::Worktree | ActiveView::Monitoring => {}
+            ActiveView::Worktree => {}
+            ActiveView::Monitoring => {
+                lines.push(format!("Metric query: {}", self.monitor_query));
+                lines.push(format!(
+                    "Query panel: {}",
+                    if self.monitor_query_mode {
+                        "editing"
+                    } else {
+                        "read-only"
+                    }
+                ));
+                if let Some(plan) = &self.monitor_chart_plan {
+                    lines.push(format!("Chart output: {}", plan.output_path.display()));
+                }
+            }
         }
         lines.push(monitor_detail_hint(self));
         lines.extend(self.notifications.iter().take(5).cloned());
@@ -516,6 +574,73 @@ impl AppState {
             .and_then(|editor| editor.get_visible_cursor(&area))
     }
 
+    pub fn toggle_monitor_query_mode(&mut self) {
+        if self.active_view != ActiveView::Monitoring {
+            return;
+        }
+        if !self.monitor_query_mode {
+            self.sync_monitor_query_editor();
+        }
+        self.monitor_query_mode = !self.monitor_query_mode;
+        self.notifications.insert(
+            0,
+            if self.monitor_query_mode {
+                "Metric query editing enabled".into()
+            } else {
+                "Metric query editing disabled".into()
+            },
+        );
+    }
+
+    pub fn handle_monitor_query_input(&mut self, key: KeyEvent, area: Rect) {
+        if self.monitor_query_editor.is_none() {
+            self.sync_monitor_query_editor();
+        }
+        if let Some(editor) = &mut self.monitor_query_editor {
+            let _ = editor.input(key, &area);
+        }
+    }
+
+    pub fn apply_monitor_query(&mut self) {
+        if let Some(editor) = &self.monitor_query_editor {
+            self.monitor_query = editor.get_content().trim().to_string();
+        }
+        self.monitor_query_mode = false;
+        self.notifications
+            .insert(0, format!("Applied metric query: {}", self.monitor_query));
+        self.refresh_monitor_only();
+    }
+
+    pub fn monitor_query_cursor(&self, area: Rect) -> Option<(u16, u16)> {
+        self.monitor_query_editor
+            .as_ref()
+            .and_then(|editor| editor.get_visible_cursor(&area))
+    }
+
+    pub fn monitor_query_editor(&self) -> Option<&Editor> {
+        self.monitor_query_editor.as_ref()
+    }
+
+    pub fn sync_monitor_image(&mut self, picker: &Picker) {
+        let Some(ChartRenderStatus::Rendered(path)) = &self.monitor_chart_status else {
+            self.monitor_image = None;
+            return;
+        };
+
+        match image::ImageReader::open(path)
+            .and_then(|reader| reader.decode().map_err(std::io::Error::other))
+        {
+            Ok(image) => {
+                self.monitor_image = Some(picker.new_resize_protocol(image));
+            }
+            Err(error) => {
+                self.monitor_image = None;
+                self.notifications
+                    .insert(0, format!("PNG chart load failed: {error}"));
+            }
+        }
+    }
+
     fn sync_config_editor(&mut self, force: bool) {
         let selected_row = self.selected_config_row_index();
         if !force && self.config_editor_dirty && self.config_editor_row == selected_row {
@@ -528,6 +653,42 @@ impl AppState {
             .or_else(|_| Editor::new("text", &payload, theme::vesper()))
             .ok();
         self.config_editor_dirty = false;
+    }
+
+    fn sync_monitor_query_editor(&mut self) {
+        self.monitor_query_editor = Editor::new("text", &self.monitor_query, theme::vesper())
+            .or_else(|_| Editor::new("text", &self.monitor_query, theme::vesper()))
+            .ok();
+    }
+
+    fn refresh_monitor_only(&mut self) {
+        let context = self.registry.context_for(self.workspace_root.clone());
+        self.monitor_frame = self.registry.monitors.values().next().and_then(|provider| {
+            match provider.fetch(&context, &self.monitor_query) {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    self.notifications
+                        .insert(0, format!("{} provider error: {}", provider.name(), error));
+                    None
+                }
+            }
+        });
+        self.refresh_monitor_chart();
+    }
+
+    fn refresh_monitor_chart(&mut self) {
+        if let Some(frame) = &self.monitor_frame {
+            self.monitor_chart_ascii = render_ascii_chart(frame, 96, 18).ok();
+            let (plan, status) = render_chart(frame);
+            self.monitor_chart_plan = Some(plan);
+            self.monitor_chart_status = Some(status);
+            self.monitor_image = None;
+        } else {
+            self.monitor_chart_ascii = None;
+            self.monitor_chart_plan = None;
+            self.monitor_chart_status = None;
+            self.monitor_image = None;
+        }
     }
 }
 

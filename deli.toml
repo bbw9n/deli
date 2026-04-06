@@ -16,9 +16,11 @@ args = ["preview/providers/configs.sh"]
 
 [[monitor_providers]]
 name = "monitor"
+kind = "command"
+query = "avg(rate(container_cpu_usage_seconds_total[5m]))"
 [monitor_providers.command]
 program = "sh"
-args = ["preview/providers/metrics.sh"]
+args = ["preview/providers/metrics.sh", "{{query}}"]
 
 [ui]
 refresh_seconds = 30

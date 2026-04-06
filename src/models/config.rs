@@ -12,7 +12,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub config_providers: Vec<ProviderConfig>,
     #[serde(default)]
-    pub monitor_providers: Vec<ProviderConfig>,
+    pub monitor_providers: Vec<MonitorProviderConfig>,
     #[serde(default)]
     pub action_providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -29,6 +29,32 @@ pub struct WorkspaceConfig {
 pub struct ProviderConfig {
     pub name: String,
     pub command: CommandSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorProviderKind {
+    Command,
+    Prometheus,
+    VictoriaMetrics,
+    OpenTsdb,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorProviderConfig {
+    pub name: String,
+    #[serde(default)]
+    pub kind: Option<MonitorProviderKind>,
+    #[serde(default)]
+    pub command: Option<CommandSpec>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default = "default_step_seconds")]
+    pub step_seconds: u64,
+    #[serde(default = "default_lookback_minutes")]
+    pub lookback_minutes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +146,14 @@ fn default_refresh_seconds() -> u64 {
     30
 }
 
+fn default_step_seconds() -> u64 {
+    60
+}
+
+fn default_lookback_minutes() -> u64 {
+    60
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +174,12 @@ mod tests {
 
             [ui]
             refresh_seconds = 15
+
+            [[monitor_providers]]
+            name = "prom"
+            kind = "prometheus"
+            endpoint = "http://localhost:9090"
+            query = "up"
             "#,
         )
         .unwrap();
@@ -147,5 +187,9 @@ mod tests {
         assert_eq!(config.workspaces[0].name, "prod");
         assert_eq!(config.document_providers[0].name, "docs");
         assert_eq!(config.ui.refresh_seconds, 15);
+        assert_eq!(
+            config.monitor_providers[0].kind,
+            Some(MonitorProviderKind::Prometheus)
+        );
     }
 }
