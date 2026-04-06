@@ -366,6 +366,19 @@ impl AppState {
                 .collect(),
         )
     }
+
+    pub fn selected_config_json(&self) -> String {
+        let Some(record) = self.selected_config_record() else {
+            return "{\n  \"message\": \"No config row selected\"\n}".into();
+        };
+
+        let map = record
+            .into_iter()
+            .map(|(key, value)| (key, serde_json::Value::String(value)))
+            .collect::<serde_json::Map<_, _>>();
+        serde_json::to_string_pretty(&serde_json::Value::Object(map))
+            .unwrap_or_else(|_| "{\n  \"error\": \"Unable to serialize selection\"\n}".into())
+    }
 }
 
 fn select_workspace(

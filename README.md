@@ -16,6 +16,8 @@ Current v1 MVP includes:
 cargo run -- --config deli.toml
 ```
 
+The default config points at local preview assets under `preview/`, including Mintlify-style docs, structured service config, and monitoring samples.
+
 ## Test
 
 ```bash

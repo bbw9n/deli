@@ -6,19 +6,19 @@ root = "."
 name = "docs"
 [document_providers.command]
 program = "sh"
-args = ["tests/fixtures/docs.sh"]
+args = ["preview/providers/docs.sh"]
 
 [[config_providers]]
 name = "config"
 [config_providers.command]
 program = "sh"
-args = ["tests/fixtures/configs.sh"]
+args = ["preview/providers/configs.sh"]
 
 [[monitor_providers]]
 name = "monitor"
 [monitor_providers.command]
 program = "sh"
-args = ["tests/fixtures/metrics.sh"]
+args = ["preview/providers/metrics.sh"]
 
 [ui]
 refresh_seconds = 30

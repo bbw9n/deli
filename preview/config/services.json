@@ -1,0 +1,14 @@
+{
+  "columns": [
+    { "name": "service", "kind": "string" },
+    { "name": "environment", "kind": "string" },
+    { "name": "image_tag", "kind": "string" },
+    { "name": "replicas", "kind": "int" },
+    { "name": "healthy", "kind": "bool" }
+  ],
+  "rows": [
+    ["api", "prod", "api:2026.04.06.1", 6, true],
+    ["worker", "prod", "worker:2026.04.06.1", 4, true],
+    ["web", "staging", "web:2026.04.06.2", 2, true]
+  ]
+}

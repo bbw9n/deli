@@ -1,0 +1,34 @@
+---
+title: Deploy Runbook
+sidebarTitle: Deploy
+---
+
+# Deploy Runbook
+
+## Preconditions
+
+- Working tree is clean
+- CI is green
+- Release branch is selected
+
+<Steps>
+### 1. Validate configuration
+
+Confirm service image tags, replica counts, rollout strategy, and feature flags.
+
+### 2. Stage the deployment
+
+Apply the release in the staging target and confirm monitoring looks healthy.
+
+### 3. Promote to production
+
+Use the production rollout command and watch error rate, latency, and saturation.
+</Steps>
+
+## Rollback
+
+> Roll back immediately if latency spikes or readiness drops below target.
+
+```bash
+kubectl rollout undo deploy/api -n prod
+```

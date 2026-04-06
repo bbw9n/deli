@@ -5,6 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use ratatui_code_editor::{editor::Editor, theme};
+use tui_markdown::from_str as markdown_to_text;
 
 use crate::{
     app::state::{ActiveView, AppState},
@@ -17,12 +19,17 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
         .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
 
+    let detail_width = if state.active_view == ActiveView::Configs {
+        48
+    } else {
+        36
+    };
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(24),
             Constraint::Min(50),
-            Constraint::Length(36),
+            Constraint::Length(detail_width),
         ])
         .split(chunks[0]);
 
@@ -63,6 +70,11 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_details(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if state.active_view == ActiveView::Configs {
+        render_config_inspector(frame, area, state);
+        return;
+    }
+
     let lines = state.detail_lines();
     let paragraph = Paragraph::new(lines.join("\n"))
         .block(Block::default().title("Details").borders(Borders::ALL))
@@ -109,10 +121,20 @@ fn render_documents(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .wrap(Wrap { trim: false });
     frame.render_widget(list, chunks[0]);
 
-    let reader = Paragraph::new(state.document_reader_lines().join("\n"))
-        .block(Block::default().title("Reader").borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(reader, chunks[1]);
+    let reader_block = Block::default().title("Reader").borders(Borders::ALL);
+    let reader_area = reader_block.inner(chunks[1]);
+    frame.render_widget(reader_block, chunks[1]);
+
+    if let Some(document) = state.current_document() {
+        let markdown = markdown_to_text(&document.raw);
+        let reader = Paragraph::new(markdown)
+            .scroll((state.document_scroll as u16, 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(reader, reader_area);
+    } else {
+        let reader = Paragraph::new("No document selected").wrap(Wrap { trim: false });
+        frame.render_widget(reader, reader_area);
+    }
 }
 
 fn render_configs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -124,6 +146,24 @@ fn render_text_panel(frame: &mut Frame<'_>, area: Rect, title: &str, content: &s
         .block(Block::default().title(title).borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn render_config_inspector(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let block = Block::default().title("Inspector").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let payload = state.selected_config_json();
+    let editor = Editor::new("json", &payload, theme::vesper())
+        .or_else(|_| Editor::new("text", &payload, theme::vesper()));
+
+    match editor {
+        Ok(editor) => frame.render_widget(&editor, inner),
+        Err(_) => {
+            let fallback = Paragraph::new(payload).wrap(Wrap { trim: false });
+            frame.render_widget(fallback, inner);
+        }
+    }
 }
 
 fn render_palette(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

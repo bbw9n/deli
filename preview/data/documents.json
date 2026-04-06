@@ -1,0 +1,20 @@
+[
+  {
+    "id": "overview",
+    "path": "preview/docs/index.mdx",
+    "format": "mintlify",
+    "raw": "---\ntitle: Deli Overview\ndescription: A local-first developer control plane in the terminal.\n---\n\n# Deli Overview\n\n`deli` is the terminal console for end-to-end control-plane work.\n\n<Info>\nUse deli when you want docs, config, code, and monitoring in one place.\n</Info>\n\n## Core workflow\n\n- Read system and runbook documentation\n- Inspect structured runtime configuration\n- Jump into the relevant worktree or command\n- Review metrics before and after an operation\n\n## Views\n\n### Documents\n\nBrowse Mintlify-style docs and markdown without leaving the terminal.\n\n### Configs\n\nInspect provider-backed configuration as typed tabular data.\n\n### Worktree\n\nUse command launchers and workspace shortcuts as operational jump points.\n\n### Monitoring\n\nReview time-series charts with terminal-native fallbacks.\n"
+  },
+  {
+    "id": "deploy-runbook",
+    "path": "preview/docs/deploy-runbook.mdx",
+    "format": "mintlify",
+    "raw": "---\ntitle: Deploy Runbook\nsidebarTitle: Deploy\n---\n\n# Deploy Runbook\n\n## Preconditions\n\n- Working tree is clean\n- CI is green\n- Release branch is selected\n\n<Steps>\n### 1. Validate configuration\n\nConfirm service image tags, replica counts, rollout strategy, and feature flags.\n\n### 2. Stage the deployment\n\nApply the release in the staging target and confirm monitoring looks healthy.\n\n### 3. Promote to production\n\nUse the production rollout command and watch error rate, latency, and saturation.\n</Steps>\n\n## Rollback\n\n> Roll back immediately if latency spikes or readiness drops below target.\n\n```bash\nkubectl rollout undo deploy/api -n prod\n```\n"
+  },
+  {
+    "id": "observability",
+    "path": "preview/docs/observability.md",
+    "format": "markdown",
+    "raw": "# Observability Checklist\n\nUse this checklist before and after production-facing changes.\n\n- CPU and memory are within expected bounds\n- Error rate is flat or improved\n- Queue depth is stable\n- Background workers drain normally\n\n## Dashboards\n\n- `api-latency`\n- `worker-throughput`\n- `rollout-health`\n\n## Notes\n\nIf the terminal does not support kitty graphics, deli falls back to text summaries for chart panes.\n"
+  }
+]

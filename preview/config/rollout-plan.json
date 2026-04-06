@@ -1,0 +1,11 @@
+{
+  "strategy": "rolling",
+  "maxUnavailable": 1,
+  "maxSurge": 2,
+  "pauseSeconds": 30,
+  "alerts": [
+    "latency_p95",
+    "error_rate",
+    "queue_backlog"
+  ]
+}
