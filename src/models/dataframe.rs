@@ -44,6 +44,40 @@ impl CellValue {
             Self::Null => "null".to_string(),
         }
     }
+
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            Self::String(value) => serde_json::Value::String(value.clone()),
+            Self::Int(value) => serde_json::Value::Number((*value).into()),
+            Self::Float(value) => serde_json::json!(*value),
+            Self::Bool(value) => serde_json::Value::Bool(*value),
+            Self::DateTime(value) => serde_json::Value::String(value.to_rfc3339()),
+            Self::Json(value) => value.clone(),
+            Self::Null => serde_json::Value::Null,
+        }
+    }
+
+    pub fn from_json_value(kind: &ColumnType, value: &serde_json::Value) -> Option<Self> {
+        match (kind, value) {
+            (_, serde_json::Value::Null) => Some(Self::Null),
+            (ColumnType::String, serde_json::Value::String(value)) => {
+                Some(Self::String(value.clone()))
+            }
+            (ColumnType::Int, serde_json::Value::Number(value)) => value.as_i64().map(Self::Int),
+            (ColumnType::Float, serde_json::Value::Number(value)) => {
+                value.as_f64().map(Self::Float)
+            }
+            (ColumnType::Bool, serde_json::Value::Bool(value)) => Some(Self::Bool(*value)),
+            (ColumnType::DateTime, serde_json::Value::String(value)) => {
+                DateTime::parse_from_rfc3339(value)
+                    .ok()
+                    .map(|dt| Self::DateTime(dt.with_timezone(&Utc)))
+            }
+            (ColumnType::Json, value) => Some(Self::Json(value.clone())),
+            (ColumnType::String, value) => Some(Self::String(value.to_string())),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,15 +157,63 @@ impl DataFrame {
     pub fn as_records(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
         self.rows
             .iter()
-            .map(|row| {
-                self.columns
-                    .iter()
-                    .enumerate()
-                    .map(|(index, column)| {
-                        let value = row.get(index).cloned().unwrap_or(CellValue::Null);
-                        (column.name.clone(), cell_to_json(value))
-                    })
-                    .collect()
+            .map(|row| self.record_from_row(row))
+            .collect()
+    }
+
+    pub fn filter_row_indexes(&self, query: &str) -> Vec<usize> {
+        if query.trim().is_empty() {
+            return (0..self.rows.len()).collect();
+        }
+
+        let query = query.to_lowercase();
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                row.iter()
+                    .any(|cell| cell.as_display().to_lowercase().contains(&query))
+                    .then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn record_at(
+        &self,
+        row_index: usize,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let row = self.rows.get(row_index)?;
+        Some(self.record_from_row(row))
+    }
+
+    pub fn update_row_from_record(
+        &mut self,
+        row_index: usize,
+        record: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let row = self
+            .rows
+            .get_mut(row_index)
+            .ok_or_else(|| "row index out of range".to_string())?;
+
+        let mut updated = Vec::with_capacity(self.columns.len());
+        for column in &self.columns {
+            let value = record.get(&column.name).unwrap_or(&serde_json::Value::Null);
+            let cell = CellValue::from_json_value(&column.kind, value)
+                .ok_or_else(|| format!("column '{}' expects {:?}", column.name, column.kind))?;
+            updated.push(cell);
+        }
+        *row = updated;
+        Ok(())
+    }
+
+    fn record_from_row(&self, row: &[CellValue]) -> serde_json::Map<String, serde_json::Value> {
+        self.columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                let value = row.get(index).cloned().unwrap_or(CellValue::Null);
+                (column.name.clone(), value.to_json_value())
             })
             .collect()
     }
@@ -155,18 +237,6 @@ fn compare_cells(left: Option<&CellValue>, right: Option<&CellValue>, ascending:
         ordering
     } else {
         ordering.reverse()
-    }
-}
-
-fn cell_to_json(value: CellValue) -> serde_json::Value {
-    match value {
-        CellValue::String(value) => serde_json::Value::String(value),
-        CellValue::Int(value) => serde_json::Value::Number(value.into()),
-        CellValue::Float(value) => serde_json::json!(value),
-        CellValue::Bool(value) => serde_json::Value::Bool(value),
-        CellValue::DateTime(value) => serde_json::Value::String(value.to_rfc3339()),
-        CellValue::Json(value) => value,
-        CellValue::Null => serde_json::Value::Null,
     }
 }
 

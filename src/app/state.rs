@@ -1,6 +1,9 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow};
+use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
+use ratatui_code_editor::{editor::Editor, theme};
 
 use crate::{
     models::{
@@ -58,6 +61,10 @@ pub struct AppState {
     pub config_index: usize,
     pub config_filter_query: String,
     pub config_filter_mode: bool,
+    pub config_editor: Option<Editor>,
+    pub config_editor_row: Option<usize>,
+    pub config_editor_dirty: bool,
+    pub config_editor_mode: bool,
     refresh_count: usize,
 }
 
@@ -85,6 +92,10 @@ impl AppState {
             config_index: 0,
             config_filter_query: String::new(),
             config_filter_mode: false,
+            config_editor: None,
+            config_editor_row: None,
+            config_editor_dirty: false,
+            config_editor_mode: false,
             refresh_count: 0,
         })
     }
@@ -132,6 +143,7 @@ impl AppState {
             })
             .unwrap_or_else(DataFrame::empty);
         self.config_index = clamp_index(self.config_index, self.filtered_config_frame().rows.len());
+        self.sync_config_editor(true);
 
         self.monitor_frame = self.registry.monitors.values().next().and_then(|provider| {
             match provider.fetch(&context) {
@@ -162,6 +174,7 @@ impl AppState {
         self.active_view = view;
         if view != ActiveView::Configs {
             self.config_filter_mode = false;
+            self.config_editor_mode = false;
         }
     }
 
@@ -174,6 +187,7 @@ impl AppState {
             ActiveView::Configs => {
                 let rows = self.filtered_config_frame().rows.len();
                 self.config_index = step_index(self.config_index, rows, delta);
+                self.sync_config_editor(false);
             }
             ActiveView::Worktree | ActiveView::Monitoring => {}
         }
@@ -188,6 +202,9 @@ impl AppState {
     pub fn toggle_config_filter_mode(&mut self) {
         if self.active_view == ActiveView::Configs {
             self.config_filter_mode = !self.config_filter_mode;
+            if self.config_filter_mode {
+                self.config_editor_mode = false;
+            }
         }
     }
 
@@ -195,6 +212,7 @@ impl AppState {
         if self.config_filter_mode {
             self.config_filter_query.push(character);
             self.config_index = clamp_index(0, self.filtered_config_frame().rows.len());
+            self.sync_config_editor(false);
         }
     }
 
@@ -203,11 +221,106 @@ impl AppState {
             self.config_filter_query.pop();
             self.config_index =
                 clamp_index(self.config_index, self.filtered_config_frame().rows.len());
+            self.sync_config_editor(false);
         }
     }
 
     pub fn clear_filter_mode(&mut self) {
         self.config_filter_mode = false;
+    }
+
+    pub fn toggle_config_editor_mode(&mut self) {
+        if self.active_view != ActiveView::Configs {
+            return;
+        }
+        self.sync_config_editor(false);
+        self.config_editor_mode = !self.config_editor_mode;
+        self.notifications.insert(
+            0,
+            if self.config_editor_mode {
+                "Config inspector editing enabled".into()
+            } else {
+                "Config inspector editing disabled".into()
+            },
+        );
+    }
+
+    pub fn handle_config_editor_input(&mut self, key: KeyEvent, area: Rect) {
+        self.sync_config_editor(false);
+        if let Some(editor) = &mut self.config_editor {
+            if editor.input(key, &area).is_ok() {
+                self.config_editor_dirty = true;
+            }
+        }
+    }
+
+    pub fn save_config_editor(&mut self) {
+        self.sync_config_editor(false);
+        let Some(editor) = &self.config_editor else {
+            self.notifications
+                .insert(0, "No config editor content to save".into());
+            return;
+        };
+        let Some(row_index) = self.selected_config_row_index() else {
+            self.notifications
+                .insert(0, "No config row selected to save".into());
+            return;
+        };
+
+        match serde_json::from_str::<serde_json::Value>(&editor.get_content()) {
+            Ok(serde_json::Value::Object(record)) => {
+                match self.config_frame.update_row_from_record(row_index, &record) {
+                    Ok(()) => {
+                        self.config_editor_dirty = false;
+                        self.sync_config_editor(true);
+                        self.notifications.insert(
+                            0,
+                            format!("Saved selected config row {} in memory", row_index + 1),
+                        );
+                    }
+                    Err(error) => self
+                        .notifications
+                        .insert(0, format!("Save failed: {error}")),
+                };
+            }
+            Ok(_) => self.notifications.insert(
+                0,
+                "Save failed: editor content must be a JSON object".into(),
+            ),
+            Err(error) => self
+                .notifications
+                .insert(0, format!("Save failed: invalid JSON: {error}")),
+        }
+    }
+
+    pub fn export_config_editor(&mut self) {
+        self.sync_config_editor(false);
+        let Some(editor) = &self.config_editor else {
+            self.notifications
+                .insert(0, "No config editor content to export".into());
+            return;
+        };
+
+        let export_dir = self.workspace_root.join("exports");
+        if let Err(error) = fs::create_dir_all(&export_dir) {
+            self.notifications
+                .insert(0, format!("Export failed: {error}"));
+            return;
+        }
+        let row = self
+            .selected_config_row_index()
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let export_path = export_dir.join(format!("config-row-{row}.json"));
+        match fs::write(&export_path, editor.get_content()) {
+            Ok(()) => self.notifications.insert(
+                0,
+                format!("Exported inspector to {}", export_path.display()),
+            ),
+            Err(error) => self
+                .notifications
+                .insert(0, format!("Export failed: {error}")),
+        }
     }
 
     pub fn document_list_lines(&self) -> Vec<String> {
@@ -330,6 +443,19 @@ impl AppState {
             }
             ActiveView::Configs => {
                 lines.push(format!("Filter query: {}", self.config_filter_query));
+                lines.push(format!(
+                    "Inspector: {}{}",
+                    if self.config_editor_mode {
+                        "editing"
+                    } else {
+                        "read-only"
+                    },
+                    if self.config_editor_dirty {
+                        " (dirty)"
+                    } else {
+                        ""
+                    }
+                ));
                 if let Some(record) = self.selected_config_record() {
                     lines.push("Selected row:".into());
                     lines.extend(
@@ -355,10 +481,10 @@ impl AppState {
     }
 
     pub fn selected_config_record(&self) -> Option<Vec<(String, String)>> {
-        let frame = self.filtered_config_frame();
-        let row = frame.rows.get(self.config_index)?;
+        let row_index = self.selected_config_row_index()?;
+        let row = self.config_frame.rows.get(row_index)?;
         Some(
-            frame
+            self.config_frame
                 .columns
                 .iter()
                 .zip(row.iter())
@@ -368,16 +494,40 @@ impl AppState {
     }
 
     pub fn selected_config_json(&self) -> String {
-        let Some(record) = self.selected_config_record() else {
+        let Some(row_index) = self.selected_config_row_index() else {
             return "{\n  \"message\": \"No config row selected\"\n}".into();
         };
+        serde_json::to_string_pretty(&serde_json::Value::Object(
+            self.config_frame.record_at(row_index).unwrap_or_default(),
+        ))
+        .unwrap_or_else(|_| "{\n  \"error\": \"Unable to serialize selection\"\n}".into())
+    }
 
-        let map = record
-            .into_iter()
-            .map(|(key, value)| (key, serde_json::Value::String(value)))
-            .collect::<serde_json::Map<_, _>>();
-        serde_json::to_string_pretty(&serde_json::Value::Object(map))
-            .unwrap_or_else(|_| "{\n  \"error\": \"Unable to serialize selection\"\n}".into())
+    pub fn selected_config_row_index(&self) -> Option<usize> {
+        self.config_frame
+            .filter_row_indexes(&self.config_filter_query)
+            .get(self.config_index)
+            .copied()
+    }
+
+    pub fn config_editor_cursor(&self, area: Rect) -> Option<(u16, u16)> {
+        self.config_editor
+            .as_ref()
+            .and_then(|editor| editor.get_visible_cursor(&area))
+    }
+
+    fn sync_config_editor(&mut self, force: bool) {
+        let selected_row = self.selected_config_row_index();
+        if !force && self.config_editor_dirty && self.config_editor_row == selected_row {
+            return;
+        }
+
+        self.config_editor_row = selected_row;
+        let payload = self.selected_config_json();
+        self.config_editor = Editor::new("json", &payload, theme::vesper())
+            .or_else(|_| Editor::new("text", &payload, theme::vesper()))
+            .ok();
+        self.config_editor_dirty = false;
     }
 }
 
@@ -457,6 +607,8 @@ fn render_document(document: &DocumentResource) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use crate::{
         models::{
             config::AppConfig,
@@ -506,5 +658,61 @@ mod tests {
         state.move_selection(1);
 
         assert_eq!(state.current_document().unwrap().title, "Two");
+    }
+
+    #[test]
+    fn config_editor_save_updates_selected_row_in_memory() {
+        let config = AppConfig::default();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+        state.active_view = ActiveView::Configs;
+        state.config_frame = DataFrame {
+            columns: vec![
+                ColumnSchema {
+                    name: "service".into(),
+                    kind: ColumnType::String,
+                },
+                ColumnSchema {
+                    name: "replicas".into(),
+                    kind: ColumnType::Int,
+                },
+            ],
+            rows: vec![vec![CellValue::String("api".into()), CellValue::Int(4)]],
+        };
+        state.sync_config_editor(true);
+        state
+            .config_editor
+            .as_mut()
+            .unwrap()
+            .set_content("{\n  \"service\": \"api\",\n  \"replicas\": 8\n}");
+        state.config_editor_dirty = true;
+
+        state.save_config_editor();
+
+        assert_eq!(state.config_frame.rows[0][1], CellValue::Int(8));
+        assert!(!state.config_editor_dirty);
+    }
+
+    #[test]
+    fn config_editor_export_writes_json_file() {
+        let temp = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+        state.active_view = ActiveView::Configs;
+        state.workspace_root = temp.path().to_path_buf();
+        state.config_frame = DataFrame {
+            columns: vec![ColumnSchema {
+                name: "service".into(),
+                kind: ColumnType::String,
+            }],
+            rows: vec![vec![CellValue::String("api".into())]],
+        };
+        state.sync_config_editor(true);
+
+        state.export_config_editor();
+
+        let exported = temp.path().join("exports").join("config-row-1.json");
+        assert!(exported.exists());
     }
 }

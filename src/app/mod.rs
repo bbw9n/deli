@@ -4,7 +4,7 @@ use std::{io, time::Duration};
 
 use anyhow::Result;
 use crossterm::{
-    event::{KeyCode, KeyModifiers},
+    event::{KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -54,7 +54,7 @@ impl App {
             match self.event_loop.next()? {
                 AppEvent::Tick => self.state.on_tick(),
                 AppEvent::Key(key) => {
-                    if self.handle_key(key.code, key.modifiers) {
+                    if self.handle_key(key) {
                         break;
                     }
                 }
@@ -63,7 +63,10 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let code = key.code;
+        let modifiers = key.modifiers;
+
         if self.state.command_palette_open {
             return match code {
                 KeyCode::Esc => {
@@ -97,6 +100,31 @@ impl App {
                     false
                 }
                 _ => false,
+            };
+        }
+
+        if self.state.config_editor_mode {
+            return match code {
+                KeyCode::Esc => {
+                    self.state.toggle_config_editor_mode();
+                    false
+                }
+                KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.save_config_editor();
+                    false
+                }
+                KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.export_config_editor();
+                    false
+                }
+                _ => {
+                    let area = render::config_inspector_inner_area(
+                        ratatui::layout::Rect::new(0, 0, 120, 40),
+                        &self.state,
+                    );
+                    self.state.handle_config_editor_input(key, area);
+                    false
+                }
             };
         }
 
@@ -157,6 +185,18 @@ impl App {
             }
             KeyCode::Char('f') => {
                 self.state.toggle_config_filter_mode();
+                false
+            }
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.save_config_editor();
+                false
+            }
+            KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.export_config_editor();
+                false
+            }
+            KeyCode::Char('e') => {
+                self.state.toggle_config_editor_mode();
                 false
             }
             KeyCode::Char('/') => {

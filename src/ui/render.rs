@@ -1,11 +1,11 @@
 use ratatui::{
     Frame,
+    layout::Position,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
-use ratatui_code_editor::{editor::Editor, theme};
 use tui_markdown::from_str as markdown_to_text;
 
 use crate::{
@@ -19,19 +19,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
         .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
 
-    let detail_width = if state.active_view == ActiveView::Configs {
-        48
-    } else {
-        36
-    };
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(24),
-            Constraint::Min(50),
-            Constraint::Length(detail_width),
-        ])
-        .split(chunks[0]);
+    let body = body_layout(chunks[0], state);
 
     render_sidebar(frame, body[0], state);
     render_main(frame, body[1], state);
@@ -41,6 +29,14 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     if state.command_palette_open {
         render_palette(frame, centered_rect(frame.area(), 70, 30), state);
     }
+}
+
+pub fn config_inspector_inner_area(area: Rect, state: &AppState) -> Rect {
+    let body = body_layout(area, state);
+    Block::default()
+        .title("Inspector")
+        .borders(Borders::ALL)
+        .inner(body[2])
 }
 
 fn render_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -94,6 +90,12 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw(" scroll doc  "),
         Span::styled("f", Style::default().fg(Color::Yellow)),
         Span::raw(" filter configs  "),
+        Span::styled("e", Style::default().fg(Color::Yellow)),
+        Span::raw(" edit inspector  "),
+        Span::styled("^s", Style::default().fg(Color::Yellow)),
+        Span::raw(" save row  "),
+        Span::styled("^e", Style::default().fg(Color::Yellow)),
+        Span::raw(" export json  "),
         Span::styled("/", Style::default().fg(Color::Yellow)),
         Span::raw(" command palette  "),
         Span::styled("r", Style::default().fg(Color::Yellow)),
@@ -149,20 +151,29 @@ fn render_text_panel(frame: &mut Frame<'_>, area: Rect, title: &str, content: &s
 }
 
 fn render_config_inspector(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let block = Block::default().title("Inspector").borders(Borders::ALL);
+    let title = if state.config_editor_mode {
+        if state.config_editor_dirty {
+            "Inspector [editing, dirty]"
+        } else {
+            "Inspector [editing]"
+        }
+    } else {
+        "Inspector [read-only]"
+    };
+    let block = Block::default().title(title).borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let payload = state.selected_config_json();
-    let editor = Editor::new("json", &payload, theme::vesper())
-        .or_else(|_| Editor::new("text", &payload, theme::vesper()));
-
-    match editor {
-        Ok(editor) => frame.render_widget(&editor, inner),
-        Err(_) => {
-            let fallback = Paragraph::new(payload).wrap(Wrap { trim: false });
-            frame.render_widget(fallback, inner);
+    if let Some(editor) = state.config_editor.as_ref() {
+        frame.render_widget(editor, inner);
+        if state.config_editor_mode
+            && let Some((x, y)) = state.config_editor_cursor(inner)
+        {
+            frame.set_cursor_position(Position::new(x, y));
         }
+    } else {
+        let fallback = Paragraph::new(state.selected_config_json()).wrap(Wrap { trim: false });
+        frame.render_widget(fallback, inner);
     }
 }
 
@@ -201,6 +212,23 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn body_layout(area: Rect, state: &AppState) -> Vec<Rect> {
+    let detail_width = if state.active_view == ActiveView::Configs {
+        48
+    } else {
+        36
+    };
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(24),
+            Constraint::Min(50),
+            Constraint::Length(detail_width),
+        ])
+        .split(area)
+        .to_vec()
 }
 
 pub fn render_snapshot(state: &AppState, width: u16, height: u16) -> String {
