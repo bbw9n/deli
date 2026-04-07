@@ -40,6 +40,18 @@ pub fn config_inspector_inner_area(area: Rect, state: &AppState) -> Rect {
         .inner(body[2])
 }
 
+pub fn document_editor_inner_area(area: Rect, state: &AppState) -> Rect {
+    let body = body_layout(area, state);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(30), Constraint::Min(20)])
+        .split(body[1]);
+    Block::default()
+        .title("Reader")
+        .borders(Borders::ALL)
+        .inner(chunks[1])
+}
+
 pub fn monitoring_query_inner_area(area: Rect, state: &AppState) -> Rect {
     let body = body_layout(area, state);
     let chunks = Layout::default()
@@ -114,9 +126,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::styled("f", Style::default().fg(Color::Yellow)),
         Span::raw(" filter configs  "),
         Span::styled("e", Style::default().fg(Color::Yellow)),
-        Span::raw(" edit inspector  "),
+        Span::raw(" edit doc/inspector  "),
         Span::styled("^s", Style::default().fg(Color::Yellow)),
-        Span::raw(" save row  "),
+        Span::raw(" save doc/row  "),
         Span::styled("^e", Style::default().fg(Color::Yellow)),
         Span::raw(" export json  "),
         Span::styled("m", Style::default().fg(Color::Yellow)),
@@ -158,7 +170,17 @@ fn render_documents(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let reader_area = reader_block.inner(chunks[1]);
     frame.render_widget(reader_block, chunks[1]);
 
-    if let Some(document) = state.current_document() {
+    if state.document_editor_mode {
+        if let Some(editor) = state.document_editor() {
+            frame.render_widget(editor, reader_area);
+            if let Some((x, y)) = state.document_editor_cursor(reader_area) {
+                frame.set_cursor_position(Position::new(x, y));
+            }
+        } else {
+            let reader = Paragraph::new("No document selected").wrap(Wrap { trim: false });
+            frame.render_widget(reader, reader_area);
+        }
+    } else if let Some(document) = state.current_document() {
         let markdown = markdown_to_text(&document.raw);
         let reader = Paragraph::new(markdown)
             .scroll((state.document_scroll as u16, 0))

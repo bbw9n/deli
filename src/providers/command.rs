@@ -3,7 +3,10 @@ use std::{path::Path, process::Command};
 
 use crate::{
     models::{
-        config::{CommandSpec, MonitorProviderConfig, MonitorProviderKind, ProviderConfig},
+        config::{
+            CommandSpec, DocumentProviderConfig, MonitorProviderConfig, MonitorProviderKind,
+            ProviderConfig,
+        },
         dataframe::DataFrame,
         document::{DocumentFormat, DocumentResource},
         error::{DeliError, DeliErrorKind},
@@ -47,11 +50,16 @@ struct RawDocument {
 }
 
 impl CommandDocumentProvider {
-    pub fn new(config: &ProviderConfig) -> Self {
-        Self {
+    pub fn new(config: &DocumentProviderConfig) -> Result<Self, DeliError> {
+        Ok(Self {
             name: config.name.clone(),
-            command: config.command.clone(),
-        }
+            command: config.command.clone().ok_or_else(|| {
+                DeliError::new(
+                    DeliErrorKind::Configuration,
+                    format!("document provider '{}' is missing command", config.name),
+                )
+            })?,
+        })
     }
 }
 
@@ -109,12 +117,14 @@ impl DocumentProvider for CommandDocumentProvider {
         Ok(documents
             .into_iter()
             .map(|document| {
+                let path = document.path.clone();
                 DocumentResource::from_source(
                     document.id,
-                    document.path,
+                    path.clone(),
                     parse_format(&document.format),
                     document.raw,
                 )
+                .with_origin(self.name.clone(), path, false)
             })
             .collect())
     }

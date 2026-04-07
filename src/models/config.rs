@@ -8,7 +8,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub workspaces: Vec<WorkspaceConfig>,
     #[serde(default)]
-    pub document_providers: Vec<ProviderConfig>,
+    pub document_providers: Vec<DocumentProviderConfig>,
     #[serde(default)]
     pub config_providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -29,6 +29,31 @@ pub struct WorkspaceConfig {
 pub struct ProviderConfig {
     pub name: String,
     pub command: CommandSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentProviderKind {
+    Command,
+    Notion,
+    Feishu,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentProviderConfig {
+    pub name: String,
+    #[serde(default)]
+    pub kind: Option<DocumentProviderKind>,
+    #[serde(default)]
+    pub command: Option<CommandSpec>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    #[serde(default = "default_notion_version")]
+    pub notion_version: String,
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +181,10 @@ fn default_lookback_minutes() -> u64 {
     60
 }
 
+fn default_notion_version() -> String {
+    "2026-03-11".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +227,6 @@ mod tests {
             config.monitor_providers[0].query_presets,
             vec!["up", "rate(http_requests_total[5m])"]
         );
+        assert_eq!(config.document_providers[0].kind, None);
     }
 }

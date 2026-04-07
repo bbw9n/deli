@@ -16,6 +16,9 @@ pub struct DocumentResource {
     pub format: DocumentFormat,
     pub raw: String,
     pub nodes: Vec<DocumentNode>,
+    pub provider_name: Option<String>,
+    pub remote_id: Option<String>,
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +55,22 @@ impl DocumentResource {
             format,
             raw,
             nodes: normalized,
+            provider_name: None,
+            remote_id: None,
+            editable: false,
         }
+    }
+
+    pub fn with_origin(
+        mut self,
+        provider_name: impl Into<String>,
+        remote_id: impl Into<String>,
+        editable: bool,
+    ) -> Self {
+        self.provider_name = Some(provider_name.into());
+        self.remote_id = Some(remote_id.into());
+        self.editable = editable;
+        self
     }
 }
 

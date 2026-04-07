@@ -1,4 +1,5 @@
 pub mod command;
+pub mod docs_http;
 pub mod metrics_http;
 pub mod registry;
 
@@ -18,6 +19,16 @@ pub trait DocumentProvider: Send + Sync {
     fn name(&self) -> &str;
     fn list_documents(&self, context: &ProviderContext)
     -> Result<Vec<DocumentResource>, DeliError>;
+    fn save_document(
+        &self,
+        _context: &ProviderContext,
+        _document: &DocumentResource,
+    ) -> Result<DocumentResource, DeliError> {
+        Err(DeliError::new(
+            crate::models::error::DeliErrorKind::Provider,
+            "document provider is read-only",
+        ))
+    }
 }
 
 pub trait ConfigProvider: Send + Sync {

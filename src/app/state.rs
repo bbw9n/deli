@@ -68,6 +68,9 @@ pub struct AppState {
     pub registry: ProviderRegistry,
     pub document_index: usize,
     pub document_scroll: usize,
+    pub document_editor: Option<Editor>,
+    pub document_editor_dirty: bool,
+    pub document_editor_mode: bool,
     pub config_index: usize,
     pub config_filter_query: String,
     pub config_filter_mode: bool,
@@ -135,6 +138,9 @@ impl AppState {
             registry,
             document_index: 0,
             document_scroll: 0,
+            document_editor: None,
+            document_editor_dirty: false,
+            document_editor_mode: false,
             config_index: 0,
             config_filter_query: String::new(),
             config_filter_mode: false,
@@ -188,6 +194,7 @@ impl AppState {
             .collect();
         self.document_index = clamp_index(self.document_index, self.documents.len());
         self.document_scroll = 0;
+        self.sync_document_editor(true);
 
         self.config_frame = self
             .registry
@@ -230,6 +237,9 @@ impl AppState {
             self.config_filter_mode = false;
             self.config_editor_mode = false;
         }
+        if view != ActiveView::Documents {
+            self.document_editor_mode = false;
+        }
         if view != ActiveView::Monitoring {
             self.monitor_query_mode = false;
         }
@@ -240,6 +250,7 @@ impl AppState {
             ActiveView::Documents => {
                 self.document_index = step_index(self.document_index, self.documents.len(), delta);
                 self.document_scroll = 0;
+                self.sync_document_editor(false);
             }
             ActiveView::Configs => {
                 let rows = self.filtered_config_frame().rows.len();
@@ -263,6 +274,91 @@ impl AppState {
                 self.config_editor_mode = false;
             }
         }
+    }
+
+    pub fn toggle_document_editor_mode(&mut self) {
+        if self.active_view != ActiveView::Documents {
+            return;
+        }
+        self.sync_document_editor(false);
+        self.document_editor_mode = !self.document_editor_mode;
+        self.notifications.insert(
+            0,
+            if self.document_editor_mode {
+                "Document editor enabled".into()
+            } else {
+                "Document editor disabled".into()
+            },
+        );
+    }
+
+    pub fn handle_document_editor_input(&mut self, key: KeyEvent, area: Rect) {
+        self.sync_document_editor(false);
+        if let Some(editor) = &mut self.document_editor
+            && editor.input(key, &area).is_ok()
+        {
+            self.document_editor_dirty = true;
+        }
+    }
+
+    pub fn save_document_editor(&mut self) {
+        self.sync_document_editor(false);
+        let Some(editor) = &self.document_editor else {
+            self.notifications
+                .insert(0, "No document editor content to save".into());
+            return;
+        };
+        let Some(current) = self.current_document().cloned() else {
+            self.notifications.insert(0, "No document selected".into());
+            return;
+        };
+
+        let provider_name = current.provider_name.clone();
+        let remote_id = current
+            .remote_id
+            .clone()
+            .unwrap_or_else(|| current.id.clone());
+        let updated = DocumentResource::from_source(
+            current.id.clone(),
+            current.path.clone(),
+            current.format.clone(),
+            editor.get_content(),
+        )
+        .with_origin(
+            provider_name.clone().unwrap_or_else(|| "local".into()),
+            remote_id,
+            current.editable,
+        );
+
+        let context = self.registry.context_for(self.workspace_root.clone());
+        let save_result = provider_name
+            .as_ref()
+            .and_then(|name| self.registry.documents.get(name))
+            .map(|provider| provider.save_document(&context, &updated))
+            .transpose();
+
+        match save_result {
+            Ok(Some(document)) => {
+                self.documents[self.document_index] = document;
+                self.notifications
+                    .insert(0, "Saved document to provider".into());
+            }
+            Ok(None) => {
+                self.documents[self.document_index] = updated;
+                self.notifications
+                    .insert(0, "Updated document preview in memory".into());
+            }
+            Err(error) => {
+                self.documents[self.document_index] = updated;
+                self.notifications.insert(
+                    0,
+                    format!("Provider save unavailable, updated preview only: {error}"),
+                );
+            }
+        }
+
+        self.document_editor_dirty = false;
+        self.sync_document_editor(true);
     }
 
     pub fn append_filter_char(&mut self, character: char) {
@@ -519,6 +615,23 @@ impl AppState {
                     lines.push(format!("Selected doc: {}", document.title));
                     lines.push(format!("Path: {}", document.path));
                     lines.push(format!("Scroll: {}", self.document_scroll));
+                    lines.push(format!(
+                        "Editable: {}",
+                        if document.editable { "yes" } else { "no" }
+                    ));
+                    lines.push(format!(
+                        "Editor: {}{}",
+                        if self.document_editor_mode {
+                            "editing"
+                        } else {
+                            "read-only"
+                        },
+                        if self.document_editor_dirty {
+                            " (dirty)"
+                        } else {
+                            ""
+                        }
+                    ));
                 }
             }
             ActiveView::Configs => {
@@ -577,6 +690,16 @@ impl AppState {
 
     pub fn current_document(&self) -> Option<&DocumentResource> {
         self.documents.get(self.document_index)
+    }
+
+    pub fn document_editor(&self) -> Option<&Editor> {
+        self.document_editor.as_ref()
+    }
+
+    pub fn document_editor_cursor(&self, area: Rect) -> Option<(u16, u16)> {
+        self.document_editor
+            .as_ref()
+            .and_then(|editor| editor.get_visible_cursor(&area))
     }
 
     pub fn filtered_config_frame(&self) -> DataFrame {
@@ -779,6 +902,20 @@ impl AppState {
             .or_else(|_| Editor::new("text", &payload, theme::vesper()))
             .ok();
         self.config_editor_dirty = false;
+    }
+
+    fn sync_document_editor(&mut self, force: bool) {
+        if !force && self.document_editor_dirty {
+            return;
+        }
+        let payload = self
+            .current_document()
+            .map(|document| document.raw.clone())
+            .unwrap_or_else(|| "# No document selected\n".into());
+        self.document_editor = Editor::new("md", &payload, theme::vesper())
+            .or_else(|_| Editor::new("text", &payload, theme::vesper()))
+            .ok();
+        self.document_editor_dirty = false;
     }
 
     fn sync_monitor_query_editor(&mut self) {

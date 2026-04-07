@@ -1,13 +1,17 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
-    models::config::{AppConfig, MonitorProviderConfig, MonitorProviderKind},
+    models::config::{
+        AppConfig, DocumentProviderConfig, DocumentProviderKind, MonitorProviderConfig,
+        MonitorProviderKind,
+    },
     providers::{
         ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
         command::{
             CommandActionProvider, CommandConfigProvider, CommandDocumentProvider,
             CommandMonitorProvider, monitor_kind,
         },
+        docs_http::{FeishuDocumentProvider, NotionDocumentProvider, document_kind},
         metrics_http::{OpenTsdbMonitorProvider, PrometheusMonitorProvider},
     },
 };
@@ -24,12 +28,7 @@ impl ProviderRegistry {
         let documents = config
             .document_providers
             .iter()
-            .map(|provider| {
-                (
-                    provider.name.clone(),
-                    Arc::new(CommandDocumentProvider::new(provider)) as Arc<dyn DocumentProvider>,
-                )
-            })
+            .filter_map(build_document_provider)
             .collect();
         let configs = config
             .config_providers
@@ -68,6 +67,23 @@ impl ProviderRegistry {
     pub fn context_for(&self, workspace_root: PathBuf) -> ProviderContext {
         ProviderContext { workspace_root }
     }
+}
+
+fn build_document_provider(
+    provider: &DocumentProviderConfig,
+) -> Option<(String, Arc<dyn DocumentProvider>)> {
+    let built: Result<Arc<dyn DocumentProvider>, _> = match document_kind(provider) {
+        DocumentProviderKind::Command => CommandDocumentProvider::new(provider)
+            .map(|provider| Arc::new(provider) as Arc<dyn DocumentProvider>),
+        DocumentProviderKind::Notion => NotionDocumentProvider::new(provider)
+            .map(|provider| Arc::new(provider) as Arc<dyn DocumentProvider>),
+        DocumentProviderKind::Feishu => FeishuDocumentProvider::new(provider)
+            .map(|provider| Arc::new(provider) as Arc<dyn DocumentProvider>),
+    };
+
+    built
+        .ok()
+        .map(|provider_impl| (provider.name.clone(), provider_impl))
 }
 
 fn build_monitor_provider(

@@ -143,6 +143,27 @@ impl App {
             };
         }
 
+        if self.state.document_editor_mode {
+            return match code {
+                KeyCode::Esc => {
+                    self.state.toggle_document_editor_mode();
+                    false
+                }
+                KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.save_document_editor();
+                    false
+                }
+                _ => {
+                    let area = render::document_editor_inner_area(
+                        ratatui::layout::Rect::new(0, 0, 120, 40),
+                        &self.state,
+                    );
+                    self.state.handle_document_editor_input(key, area);
+                    false
+                }
+            };
+        }
+
         if self.state.monitor_query_mode {
             return match code {
                 KeyCode::Esc => {
@@ -252,7 +273,10 @@ impl App {
                 false
             }
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.save_config_editor();
+                match self.state.active_view {
+                    ActiveView::Documents => self.state.save_document_editor(),
+                    _ => self.state.save_config_editor(),
+                }
                 false
             }
             KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -260,7 +284,11 @@ impl App {
                 false
             }
             KeyCode::Char('e') => {
-                self.state.toggle_config_editor_mode();
+                match self.state.active_view {
+                    ActiveView::Documents => self.state.toggle_document_editor_mode(),
+                    ActiveView::Configs => self.state.toggle_config_editor_mode(),
+                    _ => {}
+                }
                 false
             }
             KeyCode::Char('/') => {

@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::{Read, Write},
     net::TcpListener,
     path::Path,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use deli::{
-    app::state::AppState,
+    app::state::{ActiveView, AppState},
     models::{
         config::{AppConfig, MonitorProviderKind},
         dataframe::{CellValue, ExportFormat},
@@ -275,6 +275,110 @@ fn multiple_monitor_providers_can_be_switched_in_app_state() {
     assert_eq!(state.monitor_query, "rate(http_requests_total[5m])");
 }
 
+#[test]
+fn notion_document_provider_fetches_and_saves_markdown() {
+    let (endpoint, rx) = spawn_http_sequence_server(vec![
+        r##"{"object":"page_markdown","id":"page-123","markdown":"# Runbook\n\nInitial body"}"##,
+        r##"{"object":"page_markdown","id":"page-123","markdown":"# Runbook\n\nUpdated body"}"##,
+    ]);
+
+    unsafe {
+        env::set_var("DELI_TEST_NOTION_TOKEN", "notion-secret");
+    }
+
+    let config = AppConfig::from_toml(&format!(
+        r#"
+        [[document_providers]]
+        name = "notion-docs"
+        kind = "notion"
+        endpoint = "{endpoint}"
+        token_env = "DELI_TEST_NOTION_TOKEN"
+        ids = ["page-123"]
+        "#
+    ))
+    .unwrap();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+    state.refresh_all();
+    state.activate_view(ActiveView::Documents);
+    state.toggle_document_editor_mode();
+    state
+        .document_editor
+        .as_mut()
+        .unwrap()
+        .set_content("# Runbook\n\nUpdated body");
+    state.document_editor_dirty = true;
+
+    state.save_document_editor();
+
+    let get_request = rx.recv().unwrap();
+    let patch_request = rx.recv().unwrap();
+    assert!(get_request.starts_with("GET /v1/pages/page-123/markdown "));
+    assert!(
+        get_request
+            .to_lowercase()
+            .contains("authorization: bearer notion-secret")
+    );
+    assert!(
+        get_request
+            .to_lowercase()
+            .contains("notion-version: 2026-03-11")
+    );
+    assert!(patch_request.starts_with("PATCH /v1/pages/page-123/markdown "));
+    assert!(patch_request.contains("\"type\":\"replace_content\""));
+    assert!(patch_request.contains("\"new_str\":\"# Runbook\\n\\nUpdated body\""));
+    assert!(state.documents[0].raw.contains("Updated body"));
+}
+
+#[test]
+fn feishu_document_provider_fetches_and_saves_markdown() {
+    let (endpoint, rx) = spawn_http_sequence_server(vec![
+        r##"{"code":0,"msg":"ok","data":{"title":"Ops Notes","raw_content":"# Ops Notes\n\nDraft body"}}"##,
+        r##"{"code":0,"msg":"ok","data":{"title":"Ops Notes","raw_content":"# Ops Notes\n\nSaved body"}}"##,
+    ]);
+
+    unsafe {
+        env::set_var("DELI_TEST_FEISHU_TOKEN", "feishu-secret");
+    }
+
+    let config = AppConfig::from_toml(&format!(
+        r#"
+        [[document_providers]]
+        name = "feishu-docs"
+        kind = "feishu"
+        endpoint = "{endpoint}"
+        token_env = "DELI_TEST_FEISHU_TOKEN"
+        ids = ["doccn123"]
+        "#
+    ))
+    .unwrap();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+    state.refresh_all();
+    state.activate_view(ActiveView::Documents);
+    state.toggle_document_editor_mode();
+    state
+        .document_editor
+        .as_mut()
+        .unwrap()
+        .set_content("# Ops Notes\n\nSaved body");
+    state.document_editor_dirty = true;
+
+    state.save_document_editor();
+
+    let get_request = rx.recv().unwrap();
+    let patch_request = rx.recv().unwrap();
+    assert!(get_request.starts_with("GET /open-apis/docx/v1/documents/doccn123/raw_content "));
+    assert!(
+        get_request
+            .to_lowercase()
+            .contains("authorization: bearer feishu-secret")
+    );
+    assert!(patch_request.starts_with("PATCH /open-apis/docx/v1/documents/doccn123/raw_content "));
+    assert!(patch_request.contains("\"content\":\"# Ops Notes\\n\\nSaved body\""));
+    assert!(state.documents[0].raw.contains("Saved body"));
+}
+
 fn write_fixture(path: impl AsRef<Path>, body: &str) {
     fs::write(&path, body).unwrap();
 }
@@ -297,6 +401,34 @@ fn spawn_http_server(response_body: &'static str) -> (String, mpsc::Receiver<Str
             );
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();
+        }
+    });
+
+    (format!("http://{}", addr), rx)
+}
+
+fn spawn_http_sequence_server(
+    response_bodies: Vec<&'static str>,
+) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        for response_body in response_bodies {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0_u8; 16 * 1024];
+                let bytes_read = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                tx.send(request).unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
         }
     });
 
