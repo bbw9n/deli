@@ -7,12 +7,16 @@ use crate::{
     },
     providers::{
         ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
-        command::{
-            CommandActionProvider, CommandConfigProvider, CommandDocumentProvider,
-            CommandMonitorProvider, monitor_kind,
+        actions::command::CommandActionProvider,
+        configs::command::CommandConfigProvider,
+        documents::{
+            command::CommandDocumentProvider,
+            http::{FeishuDocumentProvider, NotionDocumentProvider, document_kind},
         },
-        docs_http::{FeishuDocumentProvider, NotionDocumentProvider, document_kind},
-        metrics_http::{OpenTsdbMonitorProvider, PrometheusMonitorProvider},
+        monitoring::{
+            command::{CommandMonitorProvider, monitor_kind},
+            http::{OpenTsdbMonitorProvider, PrometheusMonitorProvider},
+        },
     },
 };
 

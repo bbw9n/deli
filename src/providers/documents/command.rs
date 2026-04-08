@@ -3,40 +3,15 @@ use std::{path::Path, process::Command};
 
 use crate::{
     models::{
-        config::{
-            CommandSpec, DocumentProviderConfig, MonitorProviderConfig, MonitorProviderKind,
-            ProviderConfig,
-        },
-        dataframe::DataFrame,
+        config::{CommandSpec, DocumentProviderConfig},
         document::{DocumentFormat, DocumentResource},
         error::{DeliError, DeliErrorKind},
-        timeseries::TimeSeriesFrame,
     },
-    providers::{
-        ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
-    },
+    providers::{DocumentProvider, ProviderContext},
 };
 
 #[derive(Debug, Clone)]
 pub struct CommandDocumentProvider {
-    name: String,
-    command: CommandSpec,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandConfigProvider {
-    name: String,
-    command: CommandSpec,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandMonitorProvider {
-    name: String,
-    command: CommandSpec,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandActionProvider {
     name: String,
     command: CommandSpec,
 }
@@ -60,39 +35,6 @@ impl CommandDocumentProvider {
                 )
             })?,
         })
-    }
-}
-
-impl CommandConfigProvider {
-    pub fn new(config: &ProviderConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            command: config.command.clone(),
-        }
-    }
-}
-
-impl CommandMonitorProvider {
-    pub fn new(config: &MonitorProviderConfig) -> Result<Self, DeliError> {
-        let command = config.command.clone().ok_or_else(|| {
-            DeliError::new(
-                DeliErrorKind::Configuration,
-                format!("monitor provider '{}' is missing command", config.name),
-            )
-        })?;
-        Ok(Self {
-            name: config.name.clone(),
-            command,
-        })
-    }
-}
-
-impl CommandActionProvider {
-    pub fn new(config: &ProviderConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            command: config.command.clone(),
-        }
     }
 }
 
@@ -128,54 +70,6 @@ impl DocumentProvider for CommandDocumentProvider {
             })
             .collect())
     }
-}
-
-impl ConfigProvider for CommandConfigProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn fetch(&self, context: &ProviderContext) -> Result<DataFrame, DeliError> {
-        let output = run_command(&self.command, &context.workspace_root, None)?;
-        serde_json::from_str(&output).map_err(|error| {
-            DeliError::new(
-                DeliErrorKind::Provider,
-                format!("invalid config provider payload: {error}"),
-            )
-            .with_retry_hint("Return a JSON object that matches the DataFrame schema.")
-        })
-    }
-}
-
-impl MonitorProvider for CommandMonitorProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn fetch(&self, context: &ProviderContext, query: &str) -> Result<TimeSeriesFrame, DeliError> {
-        let output = run_command(&self.command, &context.workspace_root, Some(query))?;
-        serde_json::from_str(&output).map_err(|error| {
-            DeliError::new(
-                DeliErrorKind::Provider,
-                format!("invalid monitor provider payload: {error}"),
-            )
-            .with_retry_hint("Return a JSON object that matches the TimeSeriesFrame schema.")
-        })
-    }
-}
-
-impl ActionProvider for CommandActionProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn commands(&self) -> Vec<CommandSpec> {
-        vec![self.command.clone()]
-    }
-}
-
-pub fn monitor_kind(config: &MonitorProviderConfig) -> MonitorProviderKind {
-    config.kind.clone().unwrap_or(MonitorProviderKind::Command)
 }
 
 fn run_command(

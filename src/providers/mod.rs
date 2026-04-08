@@ -1,6 +1,7 @@
-pub mod command;
-pub mod docs_http;
-pub mod metrics_http;
+pub mod actions;
+pub mod configs;
+pub mod documents;
+pub mod monitoring;
 pub mod registry;
 
 use std::path::PathBuf;
