@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::Path,
+    sync::Mutex,
     sync::mpsc,
     thread,
 };
@@ -13,11 +14,13 @@ use deli::{
         config::{AppConfig, MonitorProviderKind},
         dataframe::{CellValue, ExportFormat},
     },
-    providers::registry::ProviderRegistry,
+    providers::{documents::feishu_auth::FeishuUserSession, registry::ProviderRegistry},
     runtime::gnuplot::{ChartRenderMode, plan_chart},
     ui::render::render_snapshot,
 };
 use tempfile::tempdir;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn command_backed_providers_load_documents_configs_and_metrics() {
@@ -78,6 +81,7 @@ fn tui_snapshot_renders_primary_shell() {
     assert!(snapshot.contains("Views"));
     assert!(snapshot.contains("Documents"));
     assert!(snapshot.contains("Details"));
+    assert!(snapshot.contains("*Messages*"));
     assert!(snapshot.contains("Status"));
 }
 
@@ -332,12 +336,16 @@ fn notion_document_provider_fetches_and_saves_markdown() {
 
 #[test]
 fn feishu_document_provider_fetches_and_saves_markdown() {
+    let _guard = ENV_LOCK.lock().unwrap();
     let (endpoint, rx) = spawn_http_sequence_server(vec![
         r##"{"code":0,"msg":"ok","data":{"title":"Ops Notes","raw_content":"# Ops Notes\n\nDraft body"}}"##,
         r##"{"code":0,"msg":"ok","data":{"title":"Ops Notes","raw_content":"# Ops Notes\n\nSaved body"}}"##,
     ]);
 
+    let temp = tempdir().unwrap();
+
     unsafe {
+        env::set_var("HOME", temp.path());
         env::set_var("DELI_TEST_FEISHU_TOKEN", "feishu-secret");
     }
 
@@ -377,6 +385,134 @@ fn feishu_document_provider_fetches_and_saves_markdown() {
     assert!(patch_request.starts_with("PATCH /open-apis/docx/v1/documents/doccn123/raw_content "));
     assert!(patch_request.contains("\"content\":\"# Ops Notes\\n\\nSaved body\""));
     assert!(state.documents[0].raw.contains("Saved body"));
+}
+
+#[test]
+fn notion_url_can_be_opened_without_preconfigured_ids() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let (endpoint, rx) = spawn_http_server(
+        r##"{"object":"page_markdown","id":"page-1234567890abcdef1234567890abcdef","markdown":"# URL Open\n\nHello from Notion"}"##,
+    );
+
+    unsafe {
+        env::set_var("DELI_NOTION_API_BASE_URL", endpoint);
+        env::set_var("NOTION_TOKEN", "notion-secret");
+    }
+
+    let config = AppConfig::default();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+
+    state.open_remote_url(
+        "https://www.notion.so/workspace/Runbook-1234567890abcdef1234567890abcdef",
+    );
+
+    let request = rx.recv().unwrap();
+    assert!(request.starts_with("GET /v1/pages/1234567890abcdef1234567890abcdef/markdown "));
+    assert_eq!(state.active_view, ActiveView::Documents);
+    assert_eq!(state.documents.len(), 1);
+    assert!(state.documents[0].raw.contains("Hello from Notion"));
+    assert_eq!(
+        state.documents[0].source_url.as_deref(),
+        Some("https://www.notion.so/workspace/Runbook-1234567890abcdef1234567890abcdef")
+    );
+}
+
+#[test]
+fn feishu_url_can_be_opened_without_preconfigured_ids() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let (endpoint, rx) = spawn_http_server(
+        r##"{"code":0,"msg":"ok","data":{"title":"Feishu URL Doc","raw_content":"# URL Open\n\nHello from Feishu"}}"##,
+    );
+
+    let temp = tempdir().unwrap();
+
+    unsafe {
+        env::set_var("HOME", temp.path());
+        env::set_var("DELI_FEISHU_API_BASE_URL", endpoint);
+        env::set_var("FEISHU_ACCESS_TOKEN", "feishu-secret");
+    }
+
+    let config = AppConfig::default();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+
+    state.open_remote_url("https://team.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUv");
+
+    let request = rx.recv().unwrap();
+    assert!(
+        request.starts_with("GET /open-apis/docx/v1/documents/AbCdEfGhIjKlMnOpQrStUv/raw_content ")
+    );
+    assert_eq!(state.active_view, ActiveView::Documents);
+    assert_eq!(state.documents.len(), 1);
+    assert!(state.documents[0].raw.contains("Hello from Feishu"));
+    assert_eq!(
+        state.documents[0].source_url.as_deref(),
+        Some("https://team.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUv")
+    );
+}
+
+#[test]
+fn feishu_expired_user_session_refreshes_before_doc_fetch() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let (endpoint, rx) = spawn_http_sequence_server(vec![
+        r#"{"app_access_token":"app-token"}"#,
+        r#"{"code":0,"msg":"ok","data":{"access_token":"user-token","refresh_token":"refresh-2","expires_in":7200,"refresh_expires_in":86400,"name":"Alice","user_id":"ou_alice"}}"#,
+        r##"{"code":0,"msg":"ok","data":{"title":"Session Doc","raw_content":"# Session Doc\n\nBody via refreshed token"}}"##,
+    ]);
+
+    let temp = tempdir().unwrap();
+    let auth_dir = temp.path().join(".config/deli/auth");
+    fs::create_dir_all(&auth_dir).unwrap();
+    let session_path = auth_dir.join("feishu_user_session.json");
+    fs::write(
+        &session_path,
+        serde_json::to_vec_pretty(&FeishuUserSession {
+            access_token: "stale-token".into(),
+            refresh_token: "refresh-1".into(),
+            expires_at: 1,
+            refresh_expires_at: Some(86_400),
+            name: Some("Alice".into()),
+            user_id: Some("ou_alice".into()),
+            open_id: None,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    unsafe {
+        env::set_var("HOME", temp.path());
+        env::set_var("DELI_FEISHU_API_BASE_URL", endpoint);
+        env::set_var("FEISHU_APP_ID", "cli_test");
+        env::set_var("FEISHU_APP_SECRET", "secret_test");
+    }
+
+    let config = AppConfig::default();
+    let registry = ProviderRegistry::from_config(&config);
+    let mut state = AppState::new(config, registry, None).unwrap();
+
+    state.open_remote_url("https://team.feishu.cn/docx/RefreshDoc123");
+
+    let app_request = rx.recv().unwrap();
+    let refresh_request = rx.recv().unwrap();
+    let doc_request = rx.recv().unwrap();
+    assert!(app_request.starts_with("POST /open-apis/auth/v3/app_access_token/internal "));
+    assert!(app_request.contains("\"app_id\":\"cli_test\""));
+    assert!(app_request.contains("\"app_secret\":\"secret_test\""));
+    assert!(refresh_request.starts_with("POST /open-apis/authen/v1/refresh_access_token "));
+    assert!(
+        refresh_request
+            .to_lowercase()
+            .contains("authorization: bearer app-token")
+    );
+    assert!(refresh_request.contains("\"refresh_token\":\"refresh-1\""));
+    assert!(doc_request.starts_with("GET /open-apis/docx/v1/documents/RefreshDoc123/raw_content "));
+    assert!(
+        doc_request
+            .to_lowercase()
+            .contains("authorization: bearer user-token")
+    );
+    assert!(state.documents[0].raw.contains("Body via refreshed token"));
 }
 
 fn write_fixture(path: impl AsRef<Path>, body: &str) {

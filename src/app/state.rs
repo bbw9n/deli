@@ -8,12 +8,19 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
 use crate::{
     models::{
-        config::{AppConfig, WorkspaceConfig},
+        config::{AppConfig, DocumentProviderConfig, WorkspaceConfig},
         dataframe::{DataFrame, ExportFormat},
         document::{DocumentNode, DocumentResource},
+        error::{DeliError, DeliErrorKind},
         timeseries::TimeSeriesFrame,
     },
-    providers::registry::ProviderRegistry,
+    providers::{
+        documents::http::{
+            connect_feishu_from_configs, open_remote_document, parse_remote_document_url,
+            save_remote_document,
+        },
+        registry::ProviderRegistry,
+    },
     runtime::gnuplot::{ChartPlan, ChartRenderStatus, render_ascii_chart, render_chart_with_size},
     ui::render::monitor_detail_hint,
 };
@@ -65,6 +72,7 @@ pub struct AppState {
     pub config_frame: DataFrame,
     pub monitor_frame: Option<TimeSeriesFrame>,
     pub action_commands: Vec<String>,
+    pub document_provider_configs: Vec<DocumentProviderConfig>,
     pub registry: ProviderRegistry,
     pub document_index: usize,
     pub document_scroll: usize,
@@ -91,6 +99,7 @@ pub struct AppState {
     monitor_refresh_seconds: u64,
     tick_count: u64,
     monitor_graph_area: Rect,
+    ad_hoc_documents: Vec<DocumentResource>,
     refresh_count: usize,
 }
 
@@ -135,6 +144,7 @@ impl AppState {
             config_frame: DataFrame::empty(),
             monitor_frame: None,
             action_commands: Vec::new(),
+            document_provider_configs: config.document_providers.clone(),
             registry,
             document_index: 0,
             document_scroll: 0,
@@ -159,14 +169,15 @@ impl AppState {
             monitor_chart_status: None,
             monitor_chart_ascii: None,
             monitor_image: None,
+            ad_hoc_documents: Vec::new(),
             refresh_count: 0,
         })
     }
 
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.saturating_add(1);
-        if self.notifications.len() > 4 {
-            self.notifications.truncate(4);
+        if self.notifications.len() > 12 {
+            self.notifications.truncate(12);
         }
         if self.monitor_live_poll && self.tick_count % self.monitor_refresh_seconds == 0 {
             self.refresh_monitor_only();
@@ -179,7 +190,7 @@ impl AppState {
         self.notifications
             .insert(0, format!("Refresh #{}", self.refresh_count));
 
-        self.documents = self
+        let mut provider_documents = self
             .registry
             .documents
             .values()
@@ -191,7 +202,9 @@ impl AppState {
                     Vec::new()
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        provider_documents.extend(self.ad_hoc_documents.clone());
+        self.documents = provider_documents;
         self.document_index = clamp_index(self.document_index, self.documents.len());
         self.document_scroll = 0;
         self.sync_document_editor(true);
@@ -335,20 +348,33 @@ impl AppState {
             .as_ref()
             .and_then(|name| self.registry.documents.get(name))
             .map(|provider| provider.save_document(&context, &updated))
-            .transpose();
+            .transpose()
+            .or_else(|_| {
+                if updated.source_url.is_some() {
+                    save_remote_document(&updated, &self.document_provider_configs).map(Some)
+                } else {
+                    Err(DeliError::new(
+                        DeliErrorKind::Provider,
+                        "document provider save failed",
+                    ))
+                }
+            });
 
         match save_result {
             Ok(Some(document)) => {
+                self.replace_document_cache(document.clone());
                 self.documents[self.document_index] = document;
                 self.notifications
                     .insert(0, "Saved document to provider".into());
             }
             Ok(None) => {
+                self.replace_document_cache(updated.clone());
                 self.documents[self.document_index] = updated;
                 self.notifications
                     .insert(0, "Updated document preview in memory".into());
             }
             Err(error) => {
+                self.replace_document_cache(updated.clone());
                 self.documents[self.document_index] = updated;
                 self.notifications.insert(
                     0,
@@ -359,6 +385,64 @@ impl AppState {
 
         self.document_editor_dirty = false;
         self.sync_document_editor(true);
+    }
+
+    pub fn open_remote_url(&mut self, url: &str) {
+        match parse_remote_document_url(url)
+            .and_then(|reference| open_remote_document(&reference, &self.document_provider_configs))
+        {
+            Ok(document) => {
+                self.activate_view(ActiveView::Documents);
+                self.upsert_ad_hoc_document(document.clone());
+                self.documents
+                    .retain(|existing| !is_same_document(existing, &document));
+                self.documents.push(document);
+                self.document_index = self.documents.len().saturating_sub(1);
+                self.document_scroll = 0;
+                self.sync_document_editor(true);
+                self.command_query.clear();
+                self.command_palette_open = false;
+                self.notifications
+                    .insert(0, "Opened remote document URL".into());
+            }
+            Err(error) => self
+                .notifications
+                .insert(0, format!("Open URL failed: {error}")),
+        };
+    }
+
+    pub fn execute_command_palette(&mut self) {
+        let query = self.command_query.trim().to_string();
+        if query.is_empty() {
+            self.command_palette_open = false;
+            return;
+        }
+        if query.eq_ignore_ascii_case("connect feishu") {
+            self.connect_feishu();
+            return;
+        }
+        if query.starts_with("http://") || query.starts_with("https://") {
+            self.open_remote_url(&query);
+            return;
+        }
+
+        self.notifications
+            .insert(0, format!("Unknown command palette action: {query}"));
+        self.command_palette_open = false;
+    }
+
+    pub fn connect_feishu(&mut self) {
+        match connect_feishu_from_configs(&self.document_provider_configs) {
+            Ok(user_label) => {
+                self.command_query.clear();
+                self.command_palette_open = false;
+                self.notifications
+                    .insert(0, format!("Feishu connected as {user_label}"));
+            }
+            Err(error) => self
+                .notifications
+                .insert(0, format!("Feishu connect failed: {error}")),
+        }
     }
 
     pub fn append_filter_char(&mut self, character: char) {
@@ -684,8 +768,20 @@ impl AppState {
             }
         }
         lines.push(monitor_detail_hint(self));
-        lines.extend(self.notifications.iter().take(5).cloned());
         lines
+    }
+
+    pub fn message_lines(&self) -> Vec<String> {
+        if self.notifications.is_empty() {
+            return vec!["No messages yet".into()];
+        }
+
+        self.notifications
+            .iter()
+            .take(8)
+            .enumerate()
+            .map(|(index, message)| format!("{:>2}. {}", index + 1, message))
+            .collect()
     }
 
     pub fn current_document(&self) -> Option<&DocumentResource> {
@@ -918,6 +1014,22 @@ impl AppState {
         self.document_editor_dirty = false;
     }
 
+    fn upsert_ad_hoc_document(&mut self, document: DocumentResource) {
+        if let Some(index) = self
+            .ad_hoc_documents
+            .iter()
+            .position(|existing| is_same_document(existing, &document))
+        {
+            self.ad_hoc_documents[index] = document;
+        } else {
+            self.ad_hoc_documents.push(document);
+        }
+    }
+
+    fn replace_document_cache(&mut self, document: DocumentResource) {
+        self.upsert_ad_hoc_document(document);
+    }
+
     fn sync_monitor_query_editor(&mut self) {
         self.monitor_query_editor = Editor::new("text", &self.monitor_query, theme::vesper())
             .or_else(|_| Editor::new("text", &self.monitor_query, theme::vesper()))
@@ -1074,6 +1186,13 @@ fn render_document(document: &DocumentResource) -> Vec<String> {
     }
 
     lines
+}
+
+fn is_same_document(left: &DocumentResource, right: &DocumentResource) -> bool {
+    left.provider_name == right.provider_name
+        && left.remote_id == right.remote_id
+        && left.path == right.path
+        && left.id == right.id
 }
 
 #[cfg(test)]

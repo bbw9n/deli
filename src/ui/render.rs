@@ -15,17 +15,15 @@ use crate::{
 };
 
 pub fn render(frame: &mut Frame<'_>, state: &mut AppState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(3)])
-        .split(frame.area());
+    let chunks = shell_layout(frame.area());
 
     let body = body_layout(chunks[0], state);
 
     render_sidebar(frame, body[0], state);
     render_main(frame, body[1], state);
     render_details(frame, body[2], state);
-    render_footer(frame, chunks[1], state);
+    render_messages(frame, chunks[1], state);
+    render_footer(frame, chunks[2], state);
 
     if state.command_palette_open {
         render_palette(frame, centered_rect(frame.area(), 70, 30), state);
@@ -33,7 +31,8 @@ pub fn render(frame: &mut Frame<'_>, state: &mut AppState) {
 }
 
 pub fn config_inspector_inner_area(area: Rect, state: &AppState) -> Rect {
-    let body = body_layout(area, state);
+    let shell = shell_layout(area);
+    let body = body_layout(shell[0], state);
     Block::default()
         .title("Inspector")
         .borders(Borders::ALL)
@@ -41,7 +40,8 @@ pub fn config_inspector_inner_area(area: Rect, state: &AppState) -> Rect {
 }
 
 pub fn document_editor_inner_area(area: Rect, state: &AppState) -> Rect {
-    let body = body_layout(area, state);
+    let shell = shell_layout(area);
+    let body = body_layout(shell[0], state);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(30), Constraint::Min(20)])
@@ -53,7 +53,8 @@ pub fn document_editor_inner_area(area: Rect, state: &AppState) -> Rect {
 }
 
 pub fn monitoring_query_inner_area(area: Rect, state: &AppState) -> Rect {
-    let body = body_layout(area, state);
+    let shell = shell_layout(area);
+    let body = body_layout(shell[0], state);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -65,7 +66,8 @@ pub fn monitoring_query_inner_area(area: Rect, state: &AppState) -> Rect {
 }
 
 pub fn monitoring_graph_inner_area(area: Rect, state: &AppState) -> Rect {
-    let body = body_layout(area, state);
+    let shell = shell_layout(area);
+    let body = body_layout(shell[0], state);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -152,6 +154,18 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ]);
     let paragraph =
         Paragraph::new(text).block(Block::default().title("Status").borders(Borders::ALL));
+    frame.render_widget(paragraph, area);
+}
+
+fn render_messages(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let lines = state
+        .message_lines()
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().title("*Messages*").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
@@ -269,12 +283,28 @@ fn render_config_inspector(frame: &mut Frame<'_>, area: Rect, state: &AppState) 
 
 fn render_palette(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(Clear, area);
-    let actions = [
-        "open document",
-        "refresh providers",
-        "switch workspace",
-        "run worktree command",
-    ];
+    let actions = if state.command_query.starts_with("http://")
+        || state.command_query.starts_with("https://")
+    {
+        vec![
+            "Open remote URL",
+            "Paste a Notion or Feishu/Lark document link and press Enter",
+        ]
+    } else if state.command_query.eq_ignore_ascii_case("connect feishu") {
+        vec![
+            "Connect Feishu user session",
+            "Opens browser auth, captures callback, then stores a local session token",
+        ]
+    } else {
+        vec![
+            "open document",
+            "open remote url",
+            "connect feishu",
+            "refresh providers",
+            "switch workspace",
+            "run worktree command",
+        ]
+    };
     let content = actions.join("\n");
     let block = Paragraph::new(content).block(
         Block::default()
@@ -316,6 +346,18 @@ fn body_layout(area: Rect, state: &AppState) -> Vec<Rect> {
             Constraint::Length(24),
             Constraint::Min(50),
             Constraint::Length(detail_width),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn shell_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10),
+            Constraint::Length(7),
+            Constraint::Length(3),
         ])
         .split(area)
         .to_vec()

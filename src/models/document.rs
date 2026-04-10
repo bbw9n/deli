@@ -18,6 +18,7 @@ pub struct DocumentResource {
     pub nodes: Vec<DocumentNode>,
     pub provider_name: Option<String>,
     pub remote_id: Option<String>,
+    pub source_url: Option<String>,
     pub editable: bool,
 }
 
@@ -57,6 +58,7 @@ impl DocumentResource {
             nodes: normalized,
             provider_name: None,
             remote_id: None,
+            source_url: None,
             editable: false,
         }
     }
@@ -70,6 +72,11 @@ impl DocumentResource {
         self.provider_name = Some(provider_name.into());
         self.remote_id = Some(remote_id.into());
         self.editable = editable;
+        self
+    }
+
+    pub fn with_source_url(mut self, source_url: impl Into<String>) -> Self {
+        self.source_url = Some(source_url.into());
         self
     }
 }

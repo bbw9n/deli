@@ -88,6 +88,10 @@ impl App {
                     self.state.command_palette_open = false;
                     false
                 }
+                KeyCode::Enter => {
+                    self.state.execute_command_palette();
+                    false
+                }
                 KeyCode::Backspace => {
                     self.state.command_query.pop();
                     false

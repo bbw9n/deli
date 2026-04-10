@@ -2,6 +2,7 @@ use std::{env, time::Duration};
 
 use reqwest::blocking::Client;
 use serde::Deserialize;
+use url::Url;
 
 use crate::{
     models::{
@@ -9,7 +10,10 @@ use crate::{
         document::{DocumentFormat, DocumentResource},
         error::{DeliError, DeliErrorKind},
     },
-    providers::{DocumentProvider, ProviderContext},
+    providers::{
+        DocumentProvider, ProviderContext,
+        documents::feishu_auth::{connect_feishu_user_session, get_feishu_access_token},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -26,7 +30,19 @@ pub struct FeishuDocumentProvider {
     name: String,
     endpoint: String,
     token_env: String,
+    app_id_env: String,
+    app_secret_env: String,
+    authorize_url: String,
+    token_url: String,
+    refresh_url: String,
+    redirect_port: u16,
     ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteDocumentRef {
+    Notion { page_id: String, url: String },
+    Feishu { document_id: String, url: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +68,134 @@ struct FeishuDocumentData {
 
 pub fn document_kind(config: &DocumentProviderConfig) -> DocumentProviderKind {
     config.kind.clone().unwrap_or(DocumentProviderKind::Command)
+}
+
+pub fn parse_remote_document_url(url: &str) -> Result<RemoteDocumentRef, DeliError> {
+    let parsed = Url::parse(url).map_err(|error| {
+        DeliError::new(
+            DeliErrorKind::Configuration,
+            format!("invalid remote document URL: {error}"),
+        )
+    })?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let trimmed_path = parsed.path().trim_matches('/');
+
+    if host.contains("notion.so") || host.contains("notion.site") {
+        let candidate = trimmed_path
+            .split('/')
+            .next_back()
+            .and_then(|segment| segment.rsplit('-').next())
+            .unwrap_or_default()
+            .trim();
+        if candidate.len() >= 32 {
+            return Ok(RemoteDocumentRef::Notion {
+                page_id: candidate.to_string(),
+                url: url.to_string(),
+            });
+        }
+    }
+
+    if host.contains("feishu.cn")
+        || host.contains("larksuite.com")
+        || host.contains("larkoffice.com")
+    {
+        let segments = trimmed_path.split('/').collect::<Vec<_>>();
+        if let Some(index) = segments.iter().position(|segment| *segment == "docx")
+            && let Some(document_id) = segments.get(index + 1)
+        {
+            return Ok(RemoteDocumentRef::Feishu {
+                document_id: (*document_id).to_string(),
+                url: url.to_string(),
+            });
+        }
+        if let Some(index) = segments.iter().position(|segment| *segment == "wiki")
+            && let Some(document_id) = segments.get(index + 1)
+        {
+            return Ok(RemoteDocumentRef::Feishu {
+                document_id: (*document_id).to_string(),
+                url: url.to_string(),
+            });
+        }
+    }
+
+    Err(DeliError::new(
+        DeliErrorKind::Configuration,
+        "unsupported remote document URL",
+    )
+    .with_retry_hint("Paste a full Notion or Feishu/Lark document URL."))
+}
+
+pub fn open_remote_document(
+    reference: &RemoteDocumentRef,
+    configs: &[DocumentProviderConfig],
+) -> Result<DocumentResource, DeliError> {
+    match reference {
+        RemoteDocumentRef::Notion { page_id, url } => {
+            let config = resolve_notion_config(configs);
+            let provider = NotionDocumentProvider::new(&config)?;
+            let client = http_client()?;
+            provider
+                .fetch_page(&client, page_id)
+                .map(|document| document.with_source_url(url.clone()))
+        }
+        RemoteDocumentRef::Feishu { document_id, url } => {
+            let config = resolve_feishu_config(configs);
+            let provider = FeishuDocumentProvider::new(&config)?;
+            let client = http_client()?;
+            provider
+                .fetch_document(&client, document_id)
+                .map(|document| document.with_source_url(url.clone()))
+        }
+    }
+}
+
+pub fn save_remote_document(
+    document: &DocumentResource,
+    configs: &[DocumentProviderConfig],
+) -> Result<DocumentResource, DeliError> {
+    let Some(source_url) = document.source_url.as_deref() else {
+        return Err(DeliError::new(
+            DeliErrorKind::Configuration,
+            "document has no source URL for remote save",
+        ));
+    };
+
+    match parse_remote_document_url(source_url)? {
+        RemoteDocumentRef::Notion { .. } => {
+            let config = resolve_notion_config(configs);
+            let provider = NotionDocumentProvider::new(&config)?;
+            provider
+                .save_document(
+                    &ProviderContext {
+                        workspace_root: ".".into(),
+                    },
+                    document,
+                )
+                .map(|saved| saved.with_source_url(source_url.to_string()))
+        }
+        RemoteDocumentRef::Feishu { .. } => {
+            let config = resolve_feishu_config(configs);
+            let provider = FeishuDocumentProvider::new(&config)?;
+            provider
+                .save_document(
+                    &ProviderContext {
+                        workspace_root: ".".into(),
+                    },
+                    document,
+                )
+                .map(|saved| saved.with_source_url(source_url.to_string()))
+        }
+    }
+}
+
+pub fn connect_feishu_from_configs(
+    configs: &[DocumentProviderConfig],
+) -> Result<String, DeliError> {
+    let session = connect_feishu_user_session(&[resolve_feishu_config(configs)])?;
+    Ok(session
+        .name
+        .or(session.user_id)
+        .unwrap_or_else(|| "connected Feishu user".into()))
 }
 
 impl NotionDocumentProvider {
@@ -128,6 +272,45 @@ impl FeishuDocumentProvider {
                     format!("document provider '{}' is missing token_env", config.name),
                 )
             })?,
+            app_id_env: config
+                .app_id_env
+                .clone()
+                .unwrap_or_else(|| "FEISHU_APP_ID".into()),
+            app_secret_env: config
+                .app_secret_env
+                .clone()
+                .unwrap_or_else(|| "FEISHU_APP_SECRET".into()),
+            authorize_url: config.authorize_url.clone().unwrap_or_else(|| {
+                format!(
+                    "{}/open-apis/authen/v1/index",
+                    config
+                        .endpoint
+                        .clone()
+                        .unwrap_or_else(|| "https://open.feishu.cn".into())
+                        .trim_end_matches('/')
+                )
+            }),
+            token_url: config.token_url.clone().unwrap_or_else(|| {
+                format!(
+                    "{}/open-apis/authen/v1/access_token",
+                    config
+                        .endpoint
+                        .clone()
+                        .unwrap_or_else(|| "https://open.feishu.cn".into())
+                        .trim_end_matches('/')
+                )
+            }),
+            refresh_url: config.refresh_url.clone().unwrap_or_else(|| {
+                format!(
+                    "{}/open-apis/authen/v1/refresh_access_token",
+                    config
+                        .endpoint
+                        .clone()
+                        .unwrap_or_else(|| "https://open.feishu.cn".into())
+                        .trim_end_matches('/')
+                )
+            }),
+            redirect_port: config.redirect_port,
             ids: config.ids.clone(),
         })
     }
@@ -137,7 +320,7 @@ impl FeishuDocumentProvider {
         client: &Client,
         document_id: &str,
     ) -> Result<DocumentResource, DeliError> {
-        let token = read_token(&self.token_env)?;
+        let token = resolve_feishu_token(self)?;
         let response = client
             .get(format!(
                 "{}/open-apis/docx/v1/documents/{}/raw_content",
@@ -354,6 +537,74 @@ fn read_token(token_env: &str) -> Result<String, DeliError> {
     })
 }
 
+fn resolve_notion_config(configs: &[DocumentProviderConfig]) -> DocumentProviderConfig {
+    configs
+        .iter()
+        .find(|config| document_kind(config) == DocumentProviderKind::Notion)
+        .cloned()
+        .unwrap_or(DocumentProviderConfig {
+            name: "notion-url".into(),
+            kind: Some(DocumentProviderKind::Notion),
+            command: None,
+            endpoint: Some(
+                env::var("DELI_NOTION_API_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.notion.com".into()),
+            ),
+            token_env: Some("NOTION_TOKEN".into()),
+            app_id_env: None,
+            app_secret_env: None,
+            authorize_url: None,
+            token_url: None,
+            refresh_url: None,
+            notion_version: "2026-03-11".into(),
+            ids: Vec::new(),
+            redirect_port: 32323,
+        })
+}
+
+fn resolve_feishu_config(configs: &[DocumentProviderConfig]) -> DocumentProviderConfig {
+    configs
+        .iter()
+        .find(|config| document_kind(config) == DocumentProviderKind::Feishu)
+        .cloned()
+        .unwrap_or(DocumentProviderConfig {
+            name: "feishu-url".into(),
+            kind: Some(DocumentProviderKind::Feishu),
+            command: None,
+            endpoint: Some(
+                env::var("DELI_FEISHU_API_BASE_URL")
+                    .unwrap_or_else(|_| "https://open.feishu.cn".into()),
+            ),
+            token_env: Some("FEISHU_ACCESS_TOKEN".into()),
+            app_id_env: Some("FEISHU_APP_ID".into()),
+            app_secret_env: Some("FEISHU_APP_SECRET".into()),
+            authorize_url: None,
+            token_url: None,
+            refresh_url: None,
+            notion_version: "2026-03-11".into(),
+            ids: Vec::new(),
+            redirect_port: 32323,
+        })
+}
+
+fn resolve_feishu_token(provider: &FeishuDocumentProvider) -> Result<String, DeliError> {
+    get_feishu_access_token(&[DocumentProviderConfig {
+        name: provider.name.clone(),
+        kind: Some(DocumentProviderKind::Feishu),
+        command: None,
+        endpoint: Some(provider.endpoint.clone()),
+        token_env: Some(provider.token_env.clone()),
+        app_id_env: Some(provider.app_id_env.clone()),
+        app_secret_env: Some(provider.app_secret_env.clone()),
+        authorize_url: Some(provider.authorize_url.clone()),
+        token_url: Some(provider.token_url.clone()),
+        refresh_url: Some(provider.refresh_url.clone()),
+        notion_version: "2026-03-11".into(),
+        ids: provider.ids.clone(),
+        redirect_port: provider.redirect_port,
+    }])
+}
+
 fn http_client() -> Result<Client, DeliError> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -378,9 +629,45 @@ mod tests {
             command: None,
             endpoint: None,
             token_env: None,
+            app_id_env: None,
+            app_secret_env: None,
+            authorize_url: None,
+            token_url: None,
+            refresh_url: None,
             notion_version: "2026-03-11".into(),
             ids: vec![],
+            redirect_port: 32323,
         };
         assert_eq!(document_kind(&config), DocumentProviderKind::Command);
+    }
+
+    #[test]
+    fn parses_notion_url_into_page_ref() {
+        let parsed = parse_remote_document_url(
+            "https://www.notion.so/workspace/Runbook-1234567890abcdef1234567890abcdef",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            RemoteDocumentRef::Notion {
+                page_id: "1234567890abcdef1234567890abcdef".into(),
+                url: "https://www.notion.so/workspace/Runbook-1234567890abcdef1234567890abcdef"
+                    .into()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_feishu_docx_url_into_document_ref() {
+        let parsed =
+            parse_remote_document_url("https://team.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUv")
+                .unwrap();
+        assert_eq!(
+            parsed,
+            RemoteDocumentRef::Feishu {
+                document_id: "AbCdEfGhIjKlMnOpQrStUv".into(),
+                url: "https://team.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUv".into()
+            }
+        );
     }
 }

@@ -50,10 +50,22 @@ pub struct DocumentProviderConfig {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub token_env: Option<String>,
+    #[serde(default)]
+    pub app_id_env: Option<String>,
+    #[serde(default)]
+    pub app_secret_env: Option<String>,
+    #[serde(default)]
+    pub authorize_url: Option<String>,
+    #[serde(default)]
+    pub token_url: Option<String>,
+    #[serde(default)]
+    pub refresh_url: Option<String>,
     #[serde(default = "default_notion_version")]
     pub notion_version: String,
     #[serde(default)]
     pub ids: Vec<String>,
+    #[serde(default = "default_feishu_redirect_port")]
+    pub redirect_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,6 +195,10 @@ fn default_lookback_minutes() -> u64 {
 
 fn default_notion_version() -> String {
     "2026-03-11".into()
+}
+
+fn default_feishu_redirect_port() -> u16 {
+    32323
 }
 
 #[cfg(test)]
