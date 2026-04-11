@@ -16,6 +16,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub action_providers: Vec<ProviderConfig>,
     #[serde(default)]
+    pub service_providers: Vec<ProviderConfig>,
+    #[serde(default)]
     pub ui: UiConfig,
 }
 
@@ -130,6 +132,7 @@ impl Default for AppConfig {
             config_providers: Vec::new(),
             monitor_providers: Vec::new(),
             action_providers: Vec::new(),
+            service_providers: Vec::new(),
             ui: UiConfig::default(),
         }
     }
@@ -175,6 +178,10 @@ impl Default for UiConfig {
                 KeybindingConfig {
                     key: "4".into(),
                     action: "monitoring".into(),
+                },
+                KeybindingConfig {
+                    key: "5".into(),
+                    action: "services".into(),
                 },
             ],
         }
@@ -228,6 +235,12 @@ mod tests {
             endpoint = "http://localhost:9090"
             query = "up"
             query_presets = ["up", "rate(http_requests_total[5m])"]
+
+            [[service_providers]]
+            name = "services"
+            [service_providers.command]
+            program = "echo"
+            args = ["{\"columns\":[],\"rows\":[]}"]
             "#,
         )
         .unwrap();
@@ -244,5 +257,6 @@ mod tests {
             vec!["up", "rate(http_requests_total[5m])"]
         );
         assert_eq!(config.document_providers[0].kind, None);
+        assert_eq!(config.service_providers[0].name, "services");
     }
 }

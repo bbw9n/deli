@@ -3,6 +3,7 @@ pub mod configs;
 pub mod documents;
 pub mod monitoring;
 pub mod registry;
+pub mod services;
 
 use std::path::PathBuf;
 
@@ -45,4 +46,9 @@ pub trait MonitorProvider: Send + Sync {
 pub trait ActionProvider: Send + Sync {
     fn name(&self) -> &str;
     fn commands(&self) -> Vec<CommandSpec>;
+}
+
+pub trait ServiceProvider: Send + Sync {
+    fn name(&self) -> &str;
+    fn fetch(&self, context: &ProviderContext) -> Result<DataFrame, DeliError>;
 }

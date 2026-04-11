@@ -29,6 +29,12 @@ fn command_backed_providers_load_documents_configs_and_metrics() {
     write_fixture(root.join("docs.sh"), include_str!("fixtures/docs.sh"));
     write_fixture(root.join("configs.sh"), include_str!("fixtures/configs.sh"));
     write_fixture(root.join("metrics.sh"), include_str!("fixtures/metrics.sh"));
+    write_fixture(
+        root.join("services.sh"),
+        r#"#!/usr/bin/env sh
+echo '{"columns":[{"name":"kind","kind":"string"},{"name":"name","kind":"string"},{"name":"status","kind":"string"}],"rows":[["deployment","checkout-api","healthy"]]}'
+"#,
+    );
 
     let config = AppConfig::from_toml(&format!(
         r#"
@@ -53,6 +59,12 @@ fn command_backed_providers_load_documents_configs_and_metrics() {
         [monitor_providers.command]
         program = "sh"
         args = ["metrics.sh"]
+
+        [[service_providers]]
+        name = "services"
+        [service_providers.command]
+        program = "sh"
+        args = ["services.sh"]
         "#,
         root.display()
     ))
@@ -69,6 +81,11 @@ fn command_backed_providers_load_documents_configs_and_metrics() {
         CellValue::String("api".into())
     );
     assert_eq!(state.monitor_frame.as_ref().unwrap().series.len(), 1);
+    assert_eq!(state.service_frame.rows.len(), 1);
+    assert_eq!(
+        state.service_frame.rows[0][1],
+        CellValue::String("checkout-api".into())
+    );
 }
 
 #[test]
@@ -80,6 +97,7 @@ fn tui_snapshot_renders_primary_shell() {
 
     assert!(snapshot.contains("Views"));
     assert!(snapshot.contains("Documents"));
+    assert!(snapshot.contains("Services"));
     assert!(snapshot.contains("Details"));
     assert!(snapshot.contains("*Messages*"));
     assert!(snapshot.contains("Status"));

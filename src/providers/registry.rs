@@ -7,6 +7,7 @@ use crate::{
     },
     providers::{
         ActionProvider, ConfigProvider, DocumentProvider, MonitorProvider, ProviderContext,
+        ServiceProvider,
         actions::command::CommandActionProvider,
         configs::command::CommandConfigProvider,
         documents::{
@@ -17,6 +18,7 @@ use crate::{
             command::{CommandMonitorProvider, monitor_kind},
             http::{OpenTsdbMonitorProvider, PrometheusMonitorProvider},
         },
+        services::command::CommandServiceProvider,
     },
 };
 
@@ -25,6 +27,7 @@ pub struct ProviderRegistry {
     pub configs: BTreeMap<String, Arc<dyn ConfigProvider>>,
     pub monitors: BTreeMap<String, Arc<dyn MonitorProvider>>,
     pub actions: BTreeMap<String, Arc<dyn ActionProvider>>,
+    pub services: BTreeMap<String, Arc<dyn ServiceProvider>>,
 }
 
 impl ProviderRegistry {
@@ -59,12 +62,23 @@ impl ProviderRegistry {
                 )
             })
             .collect();
+        let services = config
+            .service_providers
+            .iter()
+            .map(|provider| {
+                (
+                    provider.name.clone(),
+                    Arc::new(CommandServiceProvider::new(provider)) as Arc<dyn ServiceProvider>,
+                )
+            })
+            .collect();
 
         Self {
             documents,
             configs,
             monitors,
             actions,
+            services,
         }
     }
 
@@ -140,6 +154,12 @@ mod tests {
             kind = "prometheus"
             endpoint = "http://localhost:9090"
             query = "up"
+
+            [[service_providers]]
+            name = "services"
+            [service_providers.command]
+            program = "echo"
+            args = ["{\"columns\":[],\"rows\":[]}"]
             "#,
         )
         .unwrap();
@@ -148,5 +168,6 @@ mod tests {
         assert_eq!(registry.documents.len(), 1);
         assert_eq!(registry.configs.len(), 1);
         assert_eq!(registry.monitors.len(), 1);
+        assert_eq!(registry.services.len(), 1);
     }
 }

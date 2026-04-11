@@ -22,7 +22,7 @@ use crate::{
         registry::ProviderRegistry,
     },
     runtime::gnuplot::{ChartPlan, ChartRenderStatus, render_ascii_chart, render_chart_with_size},
-    ui::render::monitor_detail_hint,
+    ui::render::{UiTheme, monitor_detail_hint},
 };
 
 #[derive(Debug, Clone)]
@@ -39,6 +39,7 @@ pub enum ActiveView {
     Configs,
     Worktree,
     Monitoring,
+    Services,
 }
 
 impl ActiveView {
@@ -48,15 +49,17 @@ impl ActiveView {
             Self::Configs => "Configs",
             Self::Worktree => "Worktree",
             Self::Monitoring => "Monitoring",
+            Self::Services => "Services",
         }
     }
 
-    pub fn all() -> [Self; 4] {
+    pub fn all() -> [Self; 5] {
         [
             Self::Documents,
             Self::Configs,
             Self::Worktree,
             Self::Monitoring,
+            Self::Services,
         ]
     }
 }
@@ -67,9 +70,11 @@ pub struct AppState {
     pub active_view: ActiveView,
     pub command_palette_open: bool,
     pub command_query: String,
+    pub command_cursor: usize,
     pub notifications: Vec<String>,
     pub documents: Vec<DocumentResource>,
     pub config_frame: DataFrame,
+    pub service_frame: DataFrame,
     pub monitor_frame: Option<TimeSeriesFrame>,
     pub action_commands: Vec<String>,
     pub document_provider_configs: Vec<DocumentProviderConfig>,
@@ -86,6 +91,9 @@ pub struct AppState {
     pub config_editor_row: Option<usize>,
     pub config_editor_dirty: bool,
     pub config_editor_mode: bool,
+    pub service_index: usize,
+    pub service_filter_query: String,
+    pub service_filter_mode: bool,
     pub monitor_query: String,
     pub monitor_query_editor: Option<Editor>,
     pub monitor_query_mode: bool,
@@ -99,6 +107,7 @@ pub struct AppState {
     monitor_refresh_seconds: u64,
     tick_count: u64,
     monitor_graph_area: Rect,
+    pub ui_theme: UiTheme,
     ad_hoc_documents: Vec<DocumentResource>,
     refresh_count: usize,
 }
@@ -134,14 +143,17 @@ impl AppState {
             monitor_refresh_seconds: config.ui.refresh_seconds.max(1),
             tick_count: 0,
             monitor_graph_area: Rect::new(0, 0, 96, 18),
+            ui_theme: UiTheme::default(),
             workspace_name: workspace.name.clone(),
             workspace_root: PathBuf::from(&workspace.root),
             active_view: ActiveView::Documents,
             command_palette_open: false,
             command_query: String::new(),
+            command_cursor: 0,
             notifications: vec!["Welcome to deli".into()],
             documents: Vec::new(),
             config_frame: DataFrame::empty(),
+            service_frame: DataFrame::empty(),
             monitor_frame: None,
             action_commands: Vec::new(),
             document_provider_configs: config.document_providers.clone(),
@@ -158,6 +170,9 @@ impl AppState {
             config_editor_row: None,
             config_editor_dirty: false,
             config_editor_mode: false,
+            service_index: 0,
+            service_filter_query: String::new(),
+            service_filter_mode: false,
             monitor_query: config
                 .monitor_providers
                 .first()
@@ -182,6 +197,10 @@ impl AppState {
         if self.monitor_live_poll && self.tick_count % self.monitor_refresh_seconds == 0 {
             self.refresh_monitor_only();
         }
+    }
+
+    pub fn set_ui_theme(&mut self, theme: UiTheme) {
+        self.ui_theme = theme;
     }
 
     pub fn refresh_all(&mut self) {
@@ -226,6 +245,23 @@ impl AppState {
         self.config_index = clamp_index(self.config_index, self.filtered_config_frame().rows.len());
         self.sync_config_editor(true);
 
+        self.service_frame = self
+            .registry
+            .services
+            .values()
+            .next()
+            .and_then(|provider| match provider.fetch(&context) {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    self.notifications
+                        .insert(0, format!("{} provider error: {}", provider.name(), error));
+                    None
+                }
+            })
+            .unwrap_or_else(DataFrame::empty);
+        self.service_index =
+            clamp_index(self.service_index, self.filtered_service_frame().rows.len());
+
         self.refresh_monitor_source(&context);
         self.sync_monitor_query_editor();
         self.refresh_monitor_chart();
@@ -256,6 +292,9 @@ impl AppState {
         if view != ActiveView::Monitoring {
             self.monitor_query_mode = false;
         }
+        if view != ActiveView::Services {
+            self.service_filter_mode = false;
+        }
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -270,6 +309,10 @@ impl AppState {
                 self.config_index = step_index(self.config_index, rows, delta);
                 self.sync_config_editor(false);
             }
+            ActiveView::Services => {
+                let rows = self.filtered_service_frame().rows.len();
+                self.service_index = step_index(self.service_index, rows, delta);
+            }
             ActiveView::Worktree | ActiveView::Monitoring => {}
         }
     }
@@ -281,11 +324,17 @@ impl AppState {
     }
 
     pub fn toggle_config_filter_mode(&mut self) {
-        if self.active_view == ActiveView::Configs {
-            self.config_filter_mode = !self.config_filter_mode;
-            if self.config_filter_mode {
-                self.config_editor_mode = false;
+        match self.active_view {
+            ActiveView::Configs => {
+                self.config_filter_mode = !self.config_filter_mode;
+                if self.config_filter_mode {
+                    self.config_editor_mode = false;
+                }
             }
+            ActiveView::Services => {
+                self.service_filter_mode = !self.service_filter_mode;
+            }
+            _ => {}
         }
     }
 
@@ -401,6 +450,7 @@ impl AppState {
                 self.document_scroll = 0;
                 self.sync_document_editor(true);
                 self.command_query.clear();
+                self.command_cursor = 0;
                 self.command_palette_open = false;
                 self.notifications
                     .insert(0, "Opened remote document URL".into());
@@ -414,7 +464,7 @@ impl AppState {
     pub fn execute_command_palette(&mut self) {
         let query = self.command_query.trim().to_string();
         if query.is_empty() {
-            self.command_palette_open = false;
+            self.close_command_palette();
             return;
         }
         if query.eq_ignore_ascii_case("connect feishu") {
@@ -428,13 +478,14 @@ impl AppState {
 
         self.notifications
             .insert(0, format!("Unknown command palette action: {query}"));
-        self.command_palette_open = false;
+        self.close_command_palette();
     }
 
     pub fn connect_feishu(&mut self) {
         match connect_feishu_from_configs(&self.document_provider_configs) {
             Ok(user_label) => {
                 self.command_query.clear();
+                self.command_cursor = 0;
                 self.command_palette_open = false;
                 self.notifications
                     .insert(0, format!("Feishu connected as {user_label}"));
@@ -445,11 +496,85 @@ impl AppState {
         }
     }
 
+    pub fn open_command_palette(&mut self) {
+        self.command_palette_open = true;
+        self.command_cursor = self.command_query.chars().count();
+    }
+
+    pub fn close_command_palette(&mut self) {
+        self.command_palette_open = false;
+    }
+
+    pub fn toggle_command_palette(&mut self) {
+        if self.command_palette_open {
+            self.close_command_palette();
+        } else {
+            self.open_command_palette();
+        }
+    }
+
+    pub fn insert_command_char(&mut self, character: char) {
+        let byte_index = char_to_byte_index(&self.command_query, self.command_cursor);
+        self.command_query.insert(byte_index, character);
+        self.command_cursor += 1;
+    }
+
+    pub fn delete_command_backward(&mut self) {
+        if self.command_cursor == 0 {
+            return;
+        }
+        let start = char_to_byte_index(&self.command_query, self.command_cursor - 1);
+        let end = char_to_byte_index(&self.command_query, self.command_cursor);
+        self.command_query.replace_range(start..end, "");
+        self.command_cursor -= 1;
+    }
+
+    pub fn delete_command_forward(&mut self) {
+        let len = self.command_query.chars().count();
+        if self.command_cursor >= len {
+            return;
+        }
+        let start = char_to_byte_index(&self.command_query, self.command_cursor);
+        let end = char_to_byte_index(&self.command_query, self.command_cursor + 1);
+        self.command_query.replace_range(start..end, "");
+    }
+
+    pub fn move_command_cursor(&mut self, delta: isize) {
+        let len = self.command_query.chars().count();
+        self.command_cursor = if delta.is_negative() {
+            self.command_cursor.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.command_cursor.saturating_add(delta as usize).min(len)
+        };
+    }
+
+    pub fn command_cursor_home(&mut self) {
+        self.command_cursor = 0;
+    }
+
+    pub fn command_cursor_end(&mut self) {
+        self.command_cursor = self.command_query.chars().count();
+    }
+
+    pub fn kill_command_to_start(&mut self) {
+        let end = char_to_byte_index(&self.command_query, self.command_cursor);
+        self.command_query.replace_range(..end, "");
+        self.command_cursor = 0;
+    }
+
+    pub fn kill_command_to_end(&mut self) {
+        let start = char_to_byte_index(&self.command_query, self.command_cursor);
+        self.command_query.replace_range(start.., "");
+    }
+
     pub fn append_filter_char(&mut self, character: char) {
         if self.config_filter_mode {
             self.config_filter_query.push(character);
             self.config_index = clamp_index(0, self.filtered_config_frame().rows.len());
             self.sync_config_editor(false);
+        } else if self.service_filter_mode {
+            self.service_filter_query.push(character);
+            self.service_index = clamp_index(0, self.filtered_service_frame().rows.len());
         }
     }
 
@@ -459,11 +584,16 @@ impl AppState {
             self.config_index =
                 clamp_index(self.config_index, self.filtered_config_frame().rows.len());
             self.sync_config_editor(false);
+        } else if self.service_filter_mode {
+            self.service_filter_query.pop();
+            self.service_index =
+                clamp_index(self.service_index, self.filtered_service_frame().rows.len());
         }
     }
 
     pub fn clear_filter_mode(&mut self) {
         self.config_filter_mode = false;
+        self.service_filter_mode = false;
     }
 
     pub fn toggle_config_editor_mode(&mut self) {
@@ -645,6 +775,30 @@ impl AppState {
         lines
     }
 
+    pub fn service_action_lines(&self) -> Vec<String> {
+        if self.service_frame.columns.is_empty() {
+            return vec!["No service resources loaded".into()];
+        }
+
+        let mut lines = vec![
+            "Read-only operations for now".into(),
+            "d describe selected resource".into(),
+            "r refresh inventory".into(),
+            "f filter resources".into(),
+        ];
+        if let Some(record) = self.selected_service_record() {
+            lines.push("Selected resource:".into());
+            lines.extend(record.into_iter().take(8).map(|(key, value)| {
+                if key == "actions" {
+                    format!("{key}: {value}")
+                } else {
+                    format!("{key}={value}")
+                }
+            }));
+        }
+        lines
+    }
+
     pub fn monitor_lines(&self) -> Vec<String> {
         match &self.monitor_frame {
             Some(frame) => {
@@ -684,6 +838,10 @@ impl AppState {
             format!("Workspace root: {}", self.workspace_root.display()),
             format!("Docs: {}", self.documents.len()),
             format!("Config rows: {}", self.filtered_config_frame().rows.len()),
+            format!(
+                "Service resources: {}",
+                self.filtered_service_frame().rows.len()
+            ),
             format!("Monitor loaded: {}", self.monitor_frame.is_some()),
         ];
         lines.push(format!(
@@ -743,6 +901,17 @@ impl AppState {
                 }
             }
             ActiveView::Worktree => {}
+            ActiveView::Services => {
+                lines.push(format!("Service filter: {}", self.service_filter_query));
+                if let Some(record) = self.selected_service_record() {
+                    lines.push("Selected service resource:".into());
+                    lines.extend(
+                        record
+                            .into_iter()
+                            .map(|(key, value)| format!("{key}: {value}")),
+                    );
+                }
+            }
             ActiveView::Monitoring => {
                 lines.push(format!("Metric query: {}", self.monitor_query));
                 lines.push(format!(
@@ -800,6 +969,31 @@ impl AppState {
 
     pub fn filtered_config_frame(&self) -> DataFrame {
         self.config_frame.filter_contains(&self.config_filter_query)
+    }
+
+    pub fn filtered_service_frame(&self) -> DataFrame {
+        self.service_frame
+            .filter_contains(&self.service_filter_query)
+    }
+
+    pub fn selected_service_record(&self) -> Option<Vec<(String, String)>> {
+        let row_index = self.selected_service_row_index()?;
+        let row = self.service_frame.rows.get(row_index)?;
+        Some(
+            self.service_frame
+                .columns
+                .iter()
+                .zip(row.iter())
+                .map(|(column, cell)| (column.name.clone(), cell.as_display()))
+                .collect(),
+        )
+    }
+
+    pub fn selected_service_row_index(&self) -> Option<usize> {
+        self.service_frame
+            .filter_row_indexes(&self.service_filter_query)
+            .get(self.service_index)
+            .copied()
     }
 
     pub fn selected_config_record(&self) -> Option<Vec<(String, String)>> {
@@ -1161,6 +1355,14 @@ fn wrap_index(index: usize, len: usize, delta: isize) -> usize {
     next as usize
 }
 
+fn char_to_byte_index(value: &str, char_index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
+}
+
 fn render_document(document: &DocumentResource) -> Vec<String> {
     let mut lines = vec![
         format!("# {}", document.title),
@@ -1236,6 +1438,31 @@ mod tests {
     }
 
     #[test]
+    fn service_filter_reduces_resources_and_resets_selection() {
+        let config = AppConfig::default();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+        state.active_view = ActiveView::Services;
+        state.service_frame = DataFrame {
+            columns: vec![ColumnSchema {
+                name: "name".into(),
+                kind: ColumnType::String,
+            }],
+            rows: vec![
+                vec![CellValue::String("checkout-api".into())],
+                vec![CellValue::String("worker".into())],
+            ],
+        };
+        state.service_index = 1;
+        state.service_filter_mode = true;
+
+        state.append_filter_char('c');
+
+        assert_eq!(state.filtered_service_frame().rows.len(), 1);
+        assert_eq!(state.service_index, 0);
+    }
+
+    #[test]
     fn document_navigation_selects_reader_target() {
         let config = AppConfig::default();
         let registry = ProviderRegistry::from_config(&config);
@@ -1248,6 +1475,35 @@ mod tests {
         state.move_selection(1);
 
         assert_eq!(state.current_document().unwrap().title, "Two");
+    }
+
+    #[test]
+    fn command_palette_input_supports_cursor_editing() {
+        let config = AppConfig::default();
+        let registry = ProviderRegistry::from_config(&config);
+        let mut state = AppState::new(config, registry, None).unwrap();
+
+        state.open_command_palette();
+        for character in "openurl".chars() {
+            state.insert_command_char(character);
+        }
+        state.move_command_cursor(-3);
+        state.insert_command_char(' ');
+        state.command_cursor_home();
+        state.kill_command_to_end();
+
+        assert_eq!(state.command_query, "");
+        assert_eq!(state.command_cursor, 0);
+
+        for character in "connect feishu".chars() {
+            state.insert_command_char(character);
+        }
+        state.command_cursor_home();
+        state.move_command_cursor(7);
+        state.delete_command_forward();
+
+        assert_eq!(state.command_query, "connectfeishu");
+        assert_eq!(state.command_cursor, 7);
     }
 
     #[test]

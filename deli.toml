@@ -27,5 +27,11 @@ query_presets = [
 program = "sh"
 args = ["preview/providers/metrics.sh", "{{query}}"]
 
+[[service_providers]]
+name = "services"
+[service_providers.command]
+program = "sh"
+args = ["preview/providers/services.sh"]
+
 [ui]
 refresh_seconds = 30

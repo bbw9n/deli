@@ -15,8 +15,11 @@ use crate::{
     app::state::{ActiveView, AppState},
     models::config::AppConfig,
     providers::registry::ProviderRegistry,
-    runtime::event::{AppEvent, EventLoop},
-    ui::render,
+    runtime::{
+        event::{AppEvent, EventLoop},
+        terminal_theme::query_background_color,
+    },
+    ui::render::{self, UiTheme},
 };
 
 pub struct App {
@@ -38,6 +41,9 @@ impl App {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        let terminal_background = query_background_color(&mut stdout, Duration::from_millis(80));
+        self.state
+            .set_ui_theme(UiTheme::from_terminal_background(terminal_background));
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
@@ -85,19 +91,65 @@ impl App {
         if self.state.command_palette_open {
             return match code {
                 KeyCode::Esc => {
-                    self.state.command_palette_open = false;
+                    self.state.close_command_palette();
                     false
                 }
                 KeyCode::Enter => {
                     self.state.execute_command_palette();
                     false
                 }
+                KeyCode::Left => {
+                    self.state.move_command_cursor(-1);
+                    false
+                }
+                KeyCode::Right => {
+                    self.state.move_command_cursor(1);
+                    false
+                }
+                KeyCode::Home => {
+                    self.state.command_cursor_home();
+                    false
+                }
+                KeyCode::End => {
+                    self.state.command_cursor_end();
+                    false
+                }
+                KeyCode::Delete => {
+                    self.state.delete_command_forward();
+                    false
+                }
                 KeyCode::Backspace => {
-                    self.state.command_query.pop();
+                    self.state.delete_command_backward();
+                    false
+                }
+                KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.command_cursor_home();
+                    false
+                }
+                KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.command_cursor_end();
+                    false
+                }
+                KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.move_command_cursor(-1);
+                    false
+                }
+                KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.move_command_cursor(1);
+                    false
+                }
+                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.kill_command_to_start();
+                    false
+                }
+                KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.kill_command_to_end();
                     false
                 }
                 KeyCode::Char(c) => {
-                    self.state.command_query.push(c);
+                    if !modifiers.contains(KeyModifiers::CONTROL) {
+                        self.state.insert_command_char(c);
+                    }
                     false
                 }
                 _ => false,
@@ -212,6 +264,10 @@ impl App {
                 self.state.activate_view(ActiveView::Monitoring);
                 false
             }
+            KeyCode::Char('5') => {
+                self.state.activate_view(ActiveView::Services);
+                false
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.state.move_selection(1);
                 false
@@ -296,12 +352,12 @@ impl App {
                 false
             }
             KeyCode::Char('/') => {
-                self.state.command_palette_open = !self.state.command_palette_open;
+                self.state.toggle_command_palette();
                 false
             }
             KeyCode::Esc => {
                 self.state.clear_filter_mode();
-                self.state.command_palette_open = false;
+                self.state.close_command_palette();
                 false
             }
             _ => false,

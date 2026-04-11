@@ -1,0 +1,20 @@
+{
+  "columns": [
+    { "name": "kind", "kind": "string" },
+    { "name": "name", "kind": "string" },
+    { "name": "status", "kind": "string" },
+    { "name": "namespace", "kind": "string" },
+    { "name": "region", "kind": "string" },
+    { "name": "version", "kind": "string" },
+    { "name": "replicas", "kind": "int" },
+    { "name": "actions", "kind": "string" }
+  ],
+  "rows": [
+    ["kubernetes/deployment", "checkout-api", "healthy", "prod", "us-west-2", "2026.04.11-3", 8, "describe, logs, rollout restart, scale"],
+    ["kubernetes/deployment", "worker-scheduler", "degraded", "prod", "us-west-2", "2026.04.10-9", 3, "describe, logs, rollback, scale"],
+    ["ecs/service", "image-renderer", "stable", "media", "us-east-1", "42", 6, "describe, deploy, scale, drain"],
+    ["lambda/function", "notify-slack", "throttled", "platform", "us-east-1", "17", 1, "describe, tail logs, publish version"],
+    ["rds/instance", "orders-primary", "available", "data", "us-west-2", "postgres-16.3", 1, "describe, snapshot, failover"],
+    ["s3/bucket", "prod-audit-logs", "available", "security", "global", "versioned", 1, "describe, open policy, sync"]
+  ]
+}
